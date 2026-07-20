@@ -14,7 +14,6 @@
 #include <sys/socket.h>
 
 namespace core {
-
     Core::Core(uint16_t port, int backlog) noexcept : port_(port), backlog_(backlog) {}
 
     Core::~Core() {
@@ -38,9 +37,9 @@ namespace core {
         setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
         sockaddr_in addr{};
-        addr.sin_family = AF_INET;
+        addr.sin_family      = AF_INET;
         addr.sin_addr.s_addr = INADDR_ANY;
-        addr.sin_port = htons(port_);
+        addr.sin_port        = htons(port_);
 
         if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
             std::cerr << "bind failed: " << strerror(errno) << std::endl;
@@ -61,7 +60,7 @@ namespace core {
         }
 
         epoll_event event{};
-        event.events = EPOLLIN;
+        event.events  = EPOLLIN;
         event.data.fd = listen_fd_;
         epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd_, &event);
 
@@ -80,15 +79,15 @@ namespace core {
             for (int i = 0; i < nfds; ++i) {
                 int fd = events[i].data.fd;
                 if (fd == listen_fd_) {
-                    handleAccept();
+                    handle_accept();
                 } else {
-                    handleClient(fd);
+                    handle_client(fd);
                 }
             }
         }
     }
 
-    void Core::handleAccept() {
+    void Core::handle_accept() {
         for (;;) {
             int client_fd = accept(listen_fd_, nullptr, nullptr);
             if (client_fd < 0) {
@@ -103,33 +102,32 @@ namespace core {
             fcntl(client_fd, F_SETFL, client_flags | O_NONBLOCK);
 
             epoll_event client_event{};
-            client_event.events = EPOLLIN;
+            client_event.events  = EPOLLIN;
             client_event.data.fd = client_fd;
             epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &client_event);
         }
     }
 
-    void Core::handleClient(int fd) {
+    void Core::handle_client(int fd) {
         char buf[1024];
-        int n = read(fd, buf, sizeof(buf) - 1);
+        int  n = read(fd, buf, sizeof(buf) - 1);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                return;  // 没有数据可读
+                return; // 没有数据可读
             }
             std::cout << "Client " << fd << " error: " << strerror(errno) << "\n";
-            closeClient(fd);
+            close_client(fd);
         } else if (n == 0) {
             std::cout << "Client " << fd << " disconnected\n";
-            closeClient(fd);
+            close_client(fd);
         } else {
             buf[n] = '\0';
             send(fd, buf, n, 0);
         }
     }
 
-    void Core::closeClient(int fd) {
+    void Core::close_client(int fd) {
         epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
         close(fd);
     }
-
 } // namespace core

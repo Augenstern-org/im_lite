@@ -7,25 +7,25 @@
 
 namespace types {
     enum class IoStatus {
-        Ok,
-        Closed,
-        WouldBlock,
-        Interrupted,
-        FrameTooLong,
-        Timeout,
-        Error,
+        ok,
+        closed,
+        would_block,
+        interrupted,
+        frame_too_long,
+        timeout,
+        error,
     };
 
     // 面向日志 / 诊断的可读名称。永不返回 nullptr。
-    inline const char* toString(IoStatus s) noexcept {
+    inline const char* to_string(IoStatus s) noexcept {
         switch (s) {
-            case IoStatus::Ok:          return "Ok";
-            case IoStatus::Closed:      return "Closed";
-            case IoStatus::WouldBlock:  return "WouldBlock";
-            case IoStatus::Interrupted: return "Interrupted";
-            case IoStatus::FrameTooLong: return "FrameTooLong";
-            case IoStatus::Timeout:     return "Timeout";
-            case IoStatus::Error:       return "Error";
+            case IoStatus::ok:              return "Ok";
+            case IoStatus::closed:          return "Closed";
+            case IoStatus::would_block:     return "WouldBlock";
+            case IoStatus::interrupted:     return "Interrupted";
+            case IoStatus::frame_too_long:  return "FrameTooLong";
+            case IoStatus::timeout:         return "Timeout";
+            case IoStatus::error:           return "Error";
         }
         return "Unknown";
     }
