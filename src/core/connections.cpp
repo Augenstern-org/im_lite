@@ -30,7 +30,9 @@ namespace core {
         for (;;) {
             ssize_t n = ::read(fd_, buf, sizeof(buf));
             if (n > 0) {
-                read_buf_.append(buf, static_cast<std::size_t>(n));
+                read_buf_.insert(read_buf_.end(),
+                                 reinterpret_cast<const std::byte*>(buf),
+                                 reinterpret_cast<const std::byte*>(buf) + static_cast<std::size_t>(n));
                 if (read_buf_.size() >= kReadSoftCap) {
                     return types::IoStatus::ok;
                 }
@@ -64,14 +66,16 @@ namespace core {
         if (write_buf_.size() - write_pos_ + len > kWriteHighWater) {
             return types::IoStatus::error;
         }
-        write_buf_.append(data, len);
+        write_buf_.insert(write_buf_.end(),
+                          reinterpret_cast<const std::byte*>(data),
+                          reinterpret_cast<const std::byte*>(data) + len);
         return flush();
     }
 
     types::IoStatus Connections::flush() {
         while (write_pos_ < write_buf_.size()) {
             ssize_t n = ::send(fd_,
-                               write_buf_.data() + write_pos_,
+                               reinterpret_cast<const char*>(write_buf_.data()) + write_pos_,
                                write_buf_.size() - write_pos_,
                                MSG_NOSIGNAL);
             if (n > 0) {
@@ -98,7 +102,7 @@ namespace core {
 
     void Connections::compact() noexcept {
         if (write_pos_ > kCompactThreshold && write_pos_ * 2 > write_buf_.size()) {
-            write_buf_.erase(0, write_pos_);
+            write_buf_.erase(write_buf_.begin(), write_buf_.begin() + write_pos_);
             write_pos_ = 0;
         }
     }

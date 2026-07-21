@@ -6,7 +6,7 @@
 #define COM_LITE_CONNECTIONS_H
 
 #include <cstddef>
-#include <string>
+#include <vector>
 #include "common/io_status.h"
 
 namespace core {
@@ -22,7 +22,7 @@ namespace core {
         types::IoStatus on_writeable();
         types::IoStatus send(const char* data, std::size_t len);
 
-        std::string& read_buffer() noexcept { return read_buf_; }
+        std::vector<std::byte>& read_buffer() noexcept { return read_buf_; }
 
         int  fd() const noexcept { return fd_; }
         bool want_write() const noexcept { return write_pos_ < write_buf_.size(); }
@@ -33,8 +33,8 @@ namespace core {
 
         void compact() noexcept;
 
-        std::string read_buf_;
-        std::string write_buf_;
+        std::vector<std::byte> read_buf_;
+        std::vector<std::byte> write_buf_;
         std::size_t write_pos_   = 0;
         int         fd_          = -1;
         bool        peer_closed_ = false;

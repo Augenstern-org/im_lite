@@ -145,9 +145,9 @@ namespace core {
             types::IoStatus rst = conn.on_readable();
 
             // 回显先于读状态分派：on_readable() 可能在同一次调用里既追加数据又返回 closed
-            std::string& in = conn.read_buffer();
+            std::vector<std::byte>& in = conn.read_buffer();
             if (!in.empty()) {
-                types::IoStatus wst = conn.send(in.data(), in.size());
+                types::IoStatus wst = conn.send(reinterpret_cast<const char*>(in.data()), in.size());
                 in.clear();
                 if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {
                     close_client(fd);

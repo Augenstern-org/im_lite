@@ -10,9 +10,9 @@ int main() {
     types::MessageBase base;
     base.from_uid_       = "alice";
     base.to_uid_         = "bob";
-    base.chat_type_      = "private";
+    base.chat_type_      = types::ChatTypes::single;
     base.client_msg_id_  = "msg-001";
-    base.msg_type_       = "text";
+    base.msg_type_       = types::MessageTypes::text;
 
     assert(base.from_uid_ == "alice");
     assert(base.to_uid_   == "bob");
@@ -20,10 +20,10 @@ int main() {
     // RequestMsg 继承 MessageBase 并增加 content_
     types::RequestMsg req;
     req.from_uid_       = "alice";
-    req.to_uid_         = "bob";
-    req.chat_type_      = "private";
+    req.to_uid_         = "HiNana";
+    req.chat_type_      = types::ChatTypes::group;
     req.client_msg_id_  = "msg-002";
-    req.msg_type_       = "text";
+    req.msg_type_       = types::MessageTypes::text;
     req.content_        = "hello world";
 
     assert(req.from_uid_ == "alice");
