@@ -37,39 +37,12 @@ namespace core {
          *
          */
 
-        // 产生头
-        inline std::vector<std::byte> build_header_except_body_len(FrameHeader fh) {
+        // MessagePack -> Encoder -> connection.write_buf_
+        // 在编码器缓冲区拼接，拼接完成之后写入输出缓冲区；
+        // MessagePack 在编码之后就当成二进制对待了，应该使用 std::vector<std::byte> 来存储。
 
-        }
-
-        // 序列化
-        inline std::string serialize(const types::RequestMsg& request_msg) {
-            nlohmann::json j = request_msg;
-            return j.dump();
-        }
-
-        // 建帧
-        inline types::IoStatus build_frame(std::string& header, const std::string& request_msg_string) {
-            if (request_msg_string.size() > UINT32_MAX) {
-                return types::IoStatus::frame_too_long;
-            }
-
-            uint32_t len = utils::endian::to_big(request_msg_string.size());
-
-            header.append(reinterpret_cast<const char*>(&len), sizeof(len));
-            header.append(request_msg_string);
-            return types::IoStatus::ok;
-        }
-
-        // 包装
-        inline types::IoStatus Encoder(Opcode                   op,
-                                       Status                   st,
-                                       const types::RequestMsg& request_msg,
-                                       std::string&             binary_out) {
-            binary_out       = build_header_except_body_len(op, st);
-            std::string body = serialize(request_msg);
-            return build_frame(binary_out, body);
-        }
+        // 先去学模板编程吧，回来再考虑怎么完成 MessagePack 到 FrameHeader & FrameBody 并编码解码
+        // 编码解码器自动通过协议号识别转换方式
     };
 } // core::encoder
 
