@@ -3,4 +3,9 @@ project(com_lite LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 
+include_directories(include)
+
+enable_testing()
+
 add_subdirectory(src)
+add_subdirectory(tests)

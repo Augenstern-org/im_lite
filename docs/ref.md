@@ -137,6 +137,30 @@ write_pos_ <= write_buf_.size()
 
 `flush()` 中 `n == 0` 的分支（`connections.cpp:81-83`）并非处理某种业务情形，而是为 `errno` 判断划定有效边界并规避死循环——详见 3.1、3.2。
 
+#### `send()` 与 `on_writeable()` 的分工
+
+二者都委托 `flush()` 执行实际写入，区别在于**调用方向相反**，以及各自在 `flush()` 之外承担的额外职责。
+
+| | `send()` | `on_writeable()` |
+|---|---|---|
+| 调用方 | 上层（`Core` 代表业务逻辑） | 事件循环（`epoll` 报告 `EPOLLOUT`） |
+| 触发源 | 应用有新数据需要发送 | 内核通知 socket 当前可写 |
+| 额外职责 | 准入控制（长度为 0 短路、高水位背压）+ 追加进 `write_buf_` | 半关闭收尾（`::shutdown(fd_, SHUT_WR)`） |
+| 对缓冲区的影响 | **唯一使 `write_buf_` 增长的函数** | 只消费，不增长 |
+
+**事件循环不能改为直接调用 `send()`**：`EPOLLOUT` 到来时并无新数据，而 `send()` 的首行 `if (len == 0) return ok`（`connections.cpp:61-63`）会短路返回，`flush()` 不会执行，积压数据将永远无法续发。因此必须存在一个不携带新数据的续写入口。
+
+**半关闭收尾放在 `on_writeable()` 而非 `flush()` 中**，是因为半关闭存在两条收尾路径，只有其中一条经过 `on_writeable()`：
+
+- **路径一（同一事件内排空）**：对端将数据与 `FIN` 一并发送 → `on_readable()` 追加数据、置 `peer_closed_`、返回 `closed` → `Core` 回显调用 `send()` → `flush()` 一次排空返回 `ok`。此时 `want_write()` 为假，由 `core.cpp:163-166` 直接关闭连接，**不经过 `on_writeable()`**。
+- **路径二（跨事件排空）**：`send()` 返回 `would_block` → 连接保留，`EPOLLIN` 撤销、`EPOLLOUT` 保留（`core.cpp:174-177`）→ 后续 `EPOLLOUT` 事件触发 `on_writeable()` → `flush()` 返回 `ok` 且 `peer_closed_` 为真 → `::shutdown(fd_, SHUT_WR)` 并返回 `closed` → 由 `core.cpp:138-141` 关闭连接。
+
+若将该判断下沉进 `flush()`，路径一会在 `send()` 内部被触发——即一次普通的业务发送可能隐式关闭写方向，职责边界被破坏。置于 `on_writeable()` 中可确保它仅在"由内核可写事件驱动的续写"这一上下文中生效。
+
+**`send()` 在追加后立即调用 `flush()` 是一项优化**：多数情况下 socket 处于可写状态，当场写出可省去一整轮 `epoll` 唤醒。若仅记账不写，每次发送都需等待 `EPOLLOUT` 才能真正送出。
+
+> 已知不对称：路径一直接 `close()`，路径二先 `::shutdown(fd_, SHUT_WR)` 再 `close()`。由于 `close()` 在发送缓冲排空后同样会发出 `FIN`，该 `shutdown` 调用在功能上并非必需，其作用是使意图显式。两条路径的收尾形式不完全一致，属待观察项。
+
 ### 7.3 压缩策略
 
 长期活跃的连接若反复发生短写，`write_pos_` 会持续前移，已发送的前缀却一直占用内存。`compact()`（`connections.cpp:99-104`）按两个条件切除前缀：
