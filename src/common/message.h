@@ -5,6 +5,8 @@
 #ifndef COM_LITE_MESSAGE_H
 #define COM_LITE_MESSAGE_H
 
+#define MAX_MESSAGE_PACK_BODY_LENGTH 65530
+
 #include <string>
 #include "json.hpp"
 

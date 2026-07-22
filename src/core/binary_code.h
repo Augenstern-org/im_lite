@@ -7,13 +7,30 @@
 #include <cstdint>
 
 namespace core {
+/* -------------------------------------------------------
+ * 定义转换规则
+ *
+ *      enum                =>         binary code
+ * -------------------------------------------------------
+ * Opcode::ack              =>              0
+ * Opcode::request          =>              1
+ * Opcode::response         =>              2
+ *
+ * Status::ok               =>              0
+ * Status::fail             =>              1
+ *
+ * -------------------------------------------------------         *
+ */
+
     enum class Opcode : uint8_t {
+        _init_,
         ack,
         request,
         response
     };
 
     enum class Status : uint8_t {
+        _init_,
         ok,
         fail
     };

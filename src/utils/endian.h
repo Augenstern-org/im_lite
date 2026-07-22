@@ -6,6 +6,7 @@
 #define COM_LITE_ENDIAN_H
 
 #include <bit>
+#include <cstdint>
 
 namespace utils::endian {
     constexpr bool is_little_endian() {

@@ -15,13 +15,17 @@ int main() {
     msg.client_msg_id_ = "hash";
     msg.content_       = "Hello World!";
 
-    std::string result;
+    std::vector<std::byte> result;
+    result.resize(1024);
 
-    core::Opcode op = core::Opcode::ack;
-    core::Status st = core::Status::ok;
+    FrameHeader fh(core::Opcode::ack, core::Status::ok);
 
-    auto encoder = core::Encoder::Encoder(op, st, msg, result);
-    assert(encoder == types::IoStatus::ok);
+    core::RequestMessagePack rmp(fh, msg);
+
+    core::Encoder encoder;
+
+    auto status = encoder.encode(rmp, result);
+    assert(status == types::IoStatus::ok);
 
     return 0;
 }
