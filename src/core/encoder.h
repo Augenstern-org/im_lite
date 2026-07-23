@@ -59,12 +59,14 @@ namespace core {
         ~Encoder() = default;
 
         static types::IoStatus encode(RequestMessagePack& request_message_pack, std::vector<std::byte>& out_buffer) noexcept {
+            // TODO：目前为无效自行抛出error，以后由其他机制保证资源有效。
+            if (!request_message_pack.is_valid()) return types::IoStatus::error;
+
+            // 编码逻辑
             uint32_t len;
             body_encoder(request_message_pack.request_msg_, out_buffer, len);
-            // if (st != types::IoStatus::ok) return st;
             request_message_pack.fh_.body_len_ = len;
             return header_encoder(request_message_pack.fh_, out_buffer);
-
         }
     };
 } // core::encoder

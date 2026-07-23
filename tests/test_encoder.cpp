@@ -12,7 +12,7 @@ int main() {
     msg.msg_type_      = types::MessageTypes::text;
     msg.from_uid_      = "Neuroil";
     msg.to_uid_        = "Evil";
-    msg.client_msg_id_ = "hash";
+    msg.client_msg_id_ = "";
     msg.content_       = "Hello World!";
 
     std::vector<std::byte> result;
@@ -22,10 +22,12 @@ int main() {
 
     core::RequestMessagePack rmp(fh, msg);
 
-    core::Encoder encoder;
+    auto status = core::Encoder::encode(rmp, result);
+    assert(status == types::IoStatus::error);
 
-    auto status = encoder.encode(rmp, result);
-    assert(status == types::IoStatus::ok);
+    rmp.request_msg_.client_msg_id_ = "hash";
+
+    assert(core::Encoder::encode(rmp, result) == types::IoStatus::ok);
 
     return 0;
 }

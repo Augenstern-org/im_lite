@@ -28,7 +28,8 @@ struct FrameHeader {
 
     explicit FrameHeader(core::Opcode opcode, core::Status status) : opcode_(opcode), status_(status) {}
 
-    bool is_init() const { return opcode_ == core::Opcode::_init_ || status_ == core::Status::_init_; }
+    // op 与 st 均已赋值才可以
+    bool is_valid() const { return opcode_ != core::Opcode::_init_ && status_ != core::Status::_init_; }
 };
 
 #endif //COM_LITE_FRAME_HEADER_H
