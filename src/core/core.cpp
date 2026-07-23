@@ -13,6 +13,10 @@
 #include <sys/fcntl.h>
 #include <sys/socket.h>
 
+#include "frame_header.h"
+#include "binary_code.h"
+#include "encoder.h"
+
 namespace core {
     Core::Core(uint16_t port, int backlog) noexcept : port_(port), backlog_(backlog) {}
 
@@ -147,7 +151,28 @@ namespace core {
             // 回显先于读状态分派：on_readable() 可能在同一次调用里既追加数据又返回 closed
             std::vector<std::byte>& in = conn.read_buffer();
             if (!in.empty()) {
-                types::IoStatus wst = conn.send(reinterpret_cast<const char*>(in.data()), in.size());
+                // 解码
+                // 按 opcode 执行操作
+                // 组装
+                // 编码
+                types::RequestMsg msg;
+                msg.chat_type_     = types::ChatTypes::single;
+                msg.msg_type_      = types::MessageTypes::text;
+                msg.from_uid_      = "Neuroil";
+                msg.to_uid_        = "Evil";
+                msg.client_msg_id_ = "hash";
+                msg.content_       = "Hello World!";
+
+                FrameHeader fh(Opcode::ack, Status::ok);
+                RequestMessagePack rmp(fh, msg);
+
+                std::vector<std::byte> result;
+                result.resize(max_message_body_length + Encoder::no_padding_size);
+
+                types::IoStatus est = Encoder::encode(rmp, result);
+
+                // 写入写缓冲区
+                types::IoStatus wst = conn.send(reinterpret_cast<const char*>(result.data()), result.size());
                 in.clear();
                 if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {
                     close_client(fd);

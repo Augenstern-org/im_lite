@@ -15,6 +15,15 @@ namespace core {
 
         RequestMessagePack() = default;
 
+        explicit RequestMessagePack(const types::RequestMsg& request_msg) {
+            fh_ = {};
+            request_msg_ = std::move(request_msg);
+        }
+
+        explicit RequestMessagePack(const FrameHeader fh) : fh_(fh) {
+            request_msg_ = {};
+        }
+
         explicit RequestMessagePack(const FrameHeader fh, const types::RequestMsg& request_msg) : fh_(fh) {
             request_msg_ = std::move(request_msg);
         }

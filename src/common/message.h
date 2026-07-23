@@ -5,10 +5,10 @@
 #ifndef COM_LITE_MESSAGE_H
 #define COM_LITE_MESSAGE_H
 
-#define MAX_MESSAGE_PACK_BODY_LENGTH 65530
-
 #include <string>
 #include "json.hpp"
+
+static constexpr std::size_t max_message_body_length = 65530;
 
 namespace types {
     enum class ChatTypes : uint8_t {

@@ -10,8 +10,8 @@
 #include "json.hpp"
 #include "common/io_status.h"
 #include "common/message.h"
-#include "utils/endian.h"
 #include <vector>
+#include <netinet/in.h>
 
 namespace core {
     class Encoder {
@@ -22,12 +22,6 @@ namespace core {
         // 先去学模板编程吧，回来再考虑怎么完成 MessagePack 到 FrameHeader & FrameBody 并编码解码
         // 编码解码器自动通过协议号识别转换方式（暂不考虑）
 
-        // 编译期计算出帧头大小
-        static constexpr std::size_t no_padding_size =
-            sizeof(decltype(FrameHeader::opcode_))
-            + sizeof(decltype(FrameHeader::status_))
-            + sizeof(decltype(FrameHeader::body_len_));
-
         // 内部缓冲区
         // std::vector<std::byte> buf_;
 
@@ -37,7 +31,7 @@ namespace core {
             out_buf[1] = static_cast<std::byte>(fh.status_);
 
             if (fh.body_len_ == 0) return types::IoStatus::error;
-            uint32_t safe_len = utils::endian::to_big(fh.body_len_);
+            uint32_t safe_len = htonl(fh.body_len_);
             memcpy(out_buf.data() + 2, &safe_len, sizeof(safe_len));
             return types::IoStatus::ok;
         }
@@ -55,6 +49,12 @@ namespace core {
         }
 
     public:
+        // 编译期计算出帧头大小
+        static constexpr std::size_t no_padding_size =
+            sizeof(decltype(FrameHeader::opcode_))
+            + sizeof(decltype(FrameHeader::status_))
+            + sizeof(decltype(FrameHeader::body_len_));
+
         Encoder() = default;
         ~Encoder() = default;
 
