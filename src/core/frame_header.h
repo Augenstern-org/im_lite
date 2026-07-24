@@ -16,9 +16,7 @@
  *   1byte    1byte         4byte
  *
  */
-
 // 这里初始化逻辑不太好，之后看看有没有更好的
-
 struct FrameHeader {
     core::Opcode opcode_   = core::Opcode::_init_;
     core::Status status_   = core::Status::_init_;
