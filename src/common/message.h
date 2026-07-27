@@ -46,7 +46,7 @@ namespace types {
     struct RequestMsg : MessageBase {
         std::string content_;
 
-        bool is_valid() {
+        bool is_valid() const {
             return is_init() && !content_.empty();
         }
     };
@@ -57,7 +57,7 @@ namespace types {
     struct ResponseMsg : MessageBase {
         std::string server_seq_;
 
-        bool is_valid() {
+        bool is_valid() const {
             return is_init() && !server_seq_.empty();
         }
     };

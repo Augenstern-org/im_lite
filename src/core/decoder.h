@@ -13,34 +13,60 @@
 #include <vector>
 #include <netinet/in.h>
 #include "encoder.h"
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <utility>
 
 namespace core {
     class Decoder {
     public:
         // 分帧逻辑应当在 decoder 之外就完成了
-        static types::IoStatus decode(const std::vector<std::byte>& in_buf, RequestMessagePack& request_message_pack) {
-            FrameHeader       fh;
-            types::RequestMsg msg;
+        static types::IoStatus decode(
+            const std::vector<std::byte>& in_buf,
+            RequestMessagePack&           out_rmp
+        ) noexcept {
+            try {
+                if (in_buf.size() < FrameHeader::wire_size) return types::IoStatus::error;
 
-            fh.opcode_ = static_cast<Opcode>(in_buf[0]);
-            fh.status_ = static_cast<Status>(in_buf[1]);
-            memcpy(&fh.body_len_, in_buf.data() + 2, sizeof(decltype(FrameHeader::body_len_)));
+                // 枚举值域校验先于 static_cast
+                const auto raw_opcode = static_cast<std::uint8_t>(in_buf[0]);
+                const auto raw_status = static_cast<std::uint8_t>(in_buf[1]);
+                if (!is_known_opcode(raw_opcode) || !is_known_status(raw_status)) {
+                    return types::IoStatus::error;
+                }
 
-            if (!fh.is_valid()) return types::IoStatus::error;
+                std::uint32_t body_len = 0;
+                std::memcpy(&body_len, in_buf.data() + 2, sizeof(body_len));
+                body_len = ntohl(body_len);
 
-            // 逆序列化
-            std::string s;
-            s.resize(in_buf.size() - Encoder::no_padding_size);
-            memcpy(s.data(), in_buf.data() + Encoder::no_padding_size, s.size());
+                if (in_buf.size() - FrameHeader::wire_size < body_len) return types::IoStatus::error;
 
-            msg = nlohmann::json::parse(s);
+                const std::string s(
+                    reinterpret_cast<const char*>(in_buf.data()) + FrameHeader::wire_size,
+                    body_len
+                );
 
-            if (!msg.is_valid()) return types::IoStatus::error;
+                nlohmann::json j = nlohmann::json::parse(s, nullptr, /*allow_exceptions=*/false);
+                if (j.is_discarded()) return types::IoStatus::error; // 必须调方法，不能与 value_t 比较
+                if (!j.is_object()) return types::IoStatus::error;   // "[1,2,3]" / "null" 会通过 parse
 
-            request_message_pack.fh_ = fh;
-            request_message_pack.request_msg_ = msg;
+                types::RequestMsg msg = j.get<types::RequestMsg>(); // 不用 get_to：失败时不半写出参
+                if (!msg.is_valid()) return types::IoStatus::error;
 
-            return types::IoStatus::ok;
+                FrameHeader fh;
+                fh.opcode_   = static_cast<Opcode>(raw_opcode);
+                fh.status_   = static_cast<Status>(raw_status);
+                fh.body_len_ = body_len;
+
+                // 执行最终操作（不能再抛异常）
+                out_rmp.fh_          = fh;
+                out_rmp.request_msg_ = std::move(msg);
+                return types::IoStatus::ok;
+            } catch (...) {
+                return types::IoStatus::error;
+            }
         }
     };
 }

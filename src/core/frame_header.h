@@ -22,6 +22,12 @@ struct FrameHeader {
     core::Status status_   = core::Status::_init_;
     uint32_t     body_len_ = 0;
 
+    // 编译期计算出帧头大小
+    static constexpr std::size_t wire_size =
+        sizeof(decltype(FrameHeader::opcode_))
+        + sizeof(decltype(FrameHeader::status_))
+        + sizeof(decltype(FrameHeader::body_len_));
+
     FrameHeader() = default;
 
     explicit FrameHeader(core::Opcode opcode, core::Status status) : opcode_(opcode), status_(status) {}

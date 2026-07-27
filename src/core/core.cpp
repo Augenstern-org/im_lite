@@ -87,7 +87,7 @@ namespace core {
                     continue;
                 }
                 bool skip = false;
-                for (int pending: pending_close_) {
+                for (int pending : pending_close_) {
                     if (pending == fd) {
                         skip = true;
                         break;
@@ -163,16 +163,23 @@ namespace core {
                 msg.client_msg_id_ = "hash";
                 msg.content_       = "Hello World!";
 
-                FrameHeader fh(Opcode::ack, Status::ok);
-                RequestMessagePack rmp(fh, msg);
-
+                FrameHeader            fh(Opcode::ack, Status::ok);
+                RequestMessagePack     rmp(fh, msg);
                 std::vector<std::byte> result;
-                result.resize(max_message_body_length + Encoder::no_padding_size);
 
-                types::IoStatus est = Encoder::encode(rmp, result);
+                result.resize(max_message_body_length + FrameHeader::wire_size);
+
+                uint32_t buf_size = 0;
+
+                types::IoStatus est = Encoder::encode(rmp, result, buf_size);
+                if (est != types::IoStatus::ok) {
+                    in.clear();
+                    close_client(fd);
+                    return;
+                }
 
                 // 写入写缓冲区
-                types::IoStatus wst = conn.send(reinterpret_cast<const char*>(result.data()), result.size());
+                types::IoStatus wst = conn.send(reinterpret_cast<const char*>(result.data()), buf_size);
                 in.clear();
                 if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {
                     close_client(fd);
@@ -219,7 +226,7 @@ namespace core {
 
     // 延迟销毁
     void Core::drain_pending_close() {
-        for (int fd: pending_close_) {
+        for (int fd : pending_close_) {
             conns_.erase(fd);
             if (disconnect_handler_) {
                 disconnect_handler_(fd);

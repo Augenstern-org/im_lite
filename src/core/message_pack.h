@@ -15,22 +15,22 @@ namespace core {
 
         RequestMessagePack() = default;
 
-        explicit RequestMessagePack(const types::RequestMsg& request_msg) {
+        explicit RequestMessagePack(types::RequestMsg request_msg) {
             fh_ = {};
             request_msg_ = std::move(request_msg);
         }
 
-        explicit RequestMessagePack(const FrameHeader fh) : fh_(fh) {
+        explicit RequestMessagePack(FrameHeader fh) : fh_(fh) {
             request_msg_ = {};
         }
 
-        explicit RequestMessagePack(const FrameHeader fh, const types::RequestMsg& request_msg) : fh_(fh) {
+        explicit RequestMessagePack(FrameHeader fh, types::RequestMsg request_msg) : fh_(fh) {
             request_msg_ = std::move(request_msg);
         }
 
         // 同样的 is_init .其实我觉得 is_valid 这个名字好像更好一点
         // 已经改了
-        bool is_valid() { return fh_.is_valid() && request_msg_.is_valid(); }
+        bool is_valid() const { return fh_.is_valid() && request_msg_.is_valid(); }
     };
 }
 

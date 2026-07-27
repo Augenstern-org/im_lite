@@ -34,6 +34,27 @@ namespace core {
         ok     = 0,
         fail   = 1
     };
+
+    // 线上字节 → 已知枚举值校验。docs/architecture.md §2.4：未知 opcode / status 一律当协议错误拒绝。
+    // 有意不写 default:，新增枚举值时由 -Wswitch 提醒此处需同步扩展。
+    constexpr bool is_known_opcode(std::uint8_t raw) noexcept {
+        switch (static_cast<Opcode>(raw)) {
+            case Opcode::ack:
+            case Opcode::request:
+            case Opcode::response: return true;
+            case Opcode::_init_:   return false;
+        }
+        return false;   // 不在枚举列表中的线上字节
+    }
+
+    constexpr bool is_known_status(std::uint8_t raw) noexcept {
+        switch (static_cast<Status>(raw)) {
+            case Status::ok:
+            case Status::fail:   return true;
+            case Status::_init_: return false;
+        }
+        return false;
+    }
 } // core
 
 #endif //COM_LITE_BINARY_CODE_H
