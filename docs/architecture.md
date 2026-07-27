@@ -65,26 +65,24 @@ flowchart TD
 
 ### 2.4 分帧协议（帧格式）
 
-为解决 TCP 字节流的粘包 / 拆包问题，采用**固定头（8 字节）+ 可变体**的帧结构。编解码由核心层完成。
+为解决 TCP 字节流的粘包 / 拆包问题，采用**固定头（6 字节）+ 可变体**的帧结构。编解码由核心层完成。
 
-**帧头布局（固定 8 字节）**
+**帧头布局（固定 6 字节）**
 
 | 偏移 | 长度 | 字段 | 类型 | 说明 |
 |---|---|---|---|---|
-| 0 | 1 | `opcode` | `enum class : uint8_t` | 帧用途（登录 / 聊天 / 心跳 …），互斥枚举值 |
-| 1 | 1 | reserved | — | 保留，发送填 0、接收忽略 |
-| 2 | 1 | `status` | `enum class : uint8_t` | 状态 / 结果码枚举值；主要用于响应方向，请求侧填 0 |
-| 3 | 1 | reserved | — | 保留，发送填 0、接收忽略 |
-| 4–7 | 4 | `body_len` | `uint32`，网络字节序（大端） | 可变体（Body）的字节数，**不含头** |
+| 0 | 1 | `opcode` | `enum class : uint8_t` | 帧用途，互斥枚举值 |
+| 1 | 1 | `status` | `enum class : uint8_t` | 状态 / 结果码枚举值 |
+| 2–5 | 4 | `body_len` | `uint32`，网络字节序（大端） | 可变体字节数，**不含头** |
 
 - **字节序**：`body_len` 一律网络字节序（大端），发送 `htonl`、接收 `ntohl`。
 - **opcode / status 用 `enum class`（限定作用域枚举）并显式指定底层类型 `uint8_t`**：恰好 1 字节、与线上字段等宽；阻断隐式 `enum → int` 转换，避免不同枚举混比或误入算术。线上字节 ↔ 枚举必须显式 `static_cast`，且**解码器须先校验读到的字节是已知枚举值**——未知 opcode / status 一律当协议错误拒绝（`IoStatus::Error`），不盲信线上字节。
 - **opcode 的用途**：核心层无需反序列化包体即可知道帧用途，可据此做早期分派（例如心跳无需走完整反序列化）；控制层按此字段判定请求类别。
 - **可变体（Body）**：`Message` 序列化后的字节，采用 **JSON** 序列化（demo 性质，优先可读与实现简单）。
 
-**收帧流程（核心层）**：读满 8 字节帧头 → 取 opcode / status（校验为已知枚举）、`ntohl` 解出 `body_len` → 校验 `body_len` 不超过上限常量 `MAX_BODY_LEN`（取值待定；超过则以 `IoStatus::FrameTooLong` 拒绝 / 关闭连接）→ 按 `body_len` 读满包体 → 反序列化为 `Message` 上交。长度被显式声明，切分不依赖分隔符，能准确处理连续到达（粘包）或被拆分（拆包）的字节流。
+**收帧流程（核心层）**：读满 6 字节帧头 → 取 opcode / status（校验为已知枚举）、`ntohl` 解出 `body_len` → 校验 `body_len` 不超过上限常量 `MAX_BODY_LEN`（取值待定；超过则以 `IoStatus::FrameTooLong` 拒绝 / 关闭连接）→ 按 `body_len` 读满包体 → 反序列化为 `Message` 上交。长度被显式声明，切分不依赖分隔符，能准确处理连续到达（粘包）或被拆分（拆包）的字节流。
 
-**实现注意**：不要把 `Header*` 直接 `reinterpret_cast` 到收到的字节缓冲上（字节序、对齐、strict-aliasing、结构体 padding 都有坑，`sizeof` 也不保证跨平台为 8）。应逐字段解析：按偏移取 opcode / status，`body_len` 用 `memcpy` 取 4 字节再 `ntohl`。
+**实现注意**：不要把 `Header*` 直接 `reinterpret_cast` 到收到的字节缓冲上（字节序、对齐、strict-aliasing、结构体 padding 都有坑，`sizeof` 也不保证跨平台为 6）。应逐字段解析：按偏移取 opcode / status，`body_len` 用 `memcpy` 取 4 字节再 `ntohl`。
 
 > 说明：原枚举值 `LineTooLong` 指按行读取时的行超长；本项目中已重命名为 `FrameTooLong`，语义为"帧体长度超过上限"。部分枚举值（如 `Interrupted` / `Timeout`）是否启用取决于最终读写实现。
 
@@ -98,7 +96,7 @@ flowchart TD
 即"编码器消费、解码器重建"是这条移动链在网络两端的落点。
 
 所有权取向：要在 C++ 里真正兑现移动语义，消息字段应为持有所有权的类型。最初由 `const char*` 切为 `std::string` 以表达所有权；最终确定为 `std::vector<std::byte>`，以显式表达二进制数据语义并避免 `std::string` 的 UTF-8 / null-terminated 隐含约定。让解码器重建出自持数据的消息对象，还能保证字节缓冲的生命周期不跨层——核心层的解码缓冲用完即可释放，向上交出的 `Message` 自成一体。（`std::vector<std::byte>` 支持移动，单次消费语义在物理上直接兑现。）
-JSON 兼容性通过 `adl_serializer<std::byte>` 的部分特化实现（hex 编解码），因此 `NLOHMANN_DEFINE_*` 宏无需改动。若后续出现性能瓶颈，再考虑 `std::string_view` 等零拷贝视图优化，但需自行保证被视图字节的生命周期覆盖消费路径。
+JSON 兼容性通过 `adl_serializer<std::byte>` 的部分特化实现（hex 编解码），因此 `NLOHMANN_DEFINE_*` 宏无需改动。若后续出现性能瓶颈，再考虑 `std::string_view` 等零拷贝视图优化，但需自行保证被视图字节的生命周期覆盖消费路径。（尚未实施，当前实现为 `std::string`）
 ## 3. 层间纪律
 
 分层能否长期立住，取决于以下几条边界纪律。它们是本设计的核心约束。
