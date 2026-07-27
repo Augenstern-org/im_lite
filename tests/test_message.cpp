@@ -1,6 +1,7 @@
 #include "common/message.h"
 
-#include <cassert>
+#include "test_support.h"
+
 #include <iostream>
 #include <string>
 #include <utility>
@@ -14,8 +15,8 @@ int main() {
     base.client_msg_id_  = "msg-001";
     base.msg_type_       = types::MessageTypes::text;
 
-    assert(base.from_uid_ == "alice");
-    assert(base.to_uid_   == "bob");
+    CHECK(base.from_uid_ == "alice");
+    CHECK(base.to_uid_   == "bob");
 
     // RequestMsg 继承 MessageBase 并增加 content_
     types::RequestMsg req;
@@ -26,8 +27,8 @@ int main() {
     req.msg_type_       = types::MessageTypes::text;
     req.content_        = "hello world";
 
-    assert(req.from_uid_ == "alice");
-    assert(req.content_  == "hello world");
+    CHECK(req.from_uid_ == "alice");
+    CHECK(req.content_  == "hello world");
 
     // ResponseMsg 继承 MessageBase 并增加 server_seq_
     types::ResponseMsg resp;
@@ -35,13 +36,13 @@ int main() {
     resp.to_uid_         = "alice";
     resp.server_seq_     = "seq-001";
 
-    assert(resp.server_seq_ == "seq-001");
+    CHECK(resp.server_seq_ == "seq-001");
 
     // 移动语义：Message 按值对象建模
     types::RequestMsg moved = std::move(req);
-    assert(moved.content_ == "hello world");
+    CHECK(moved.content_ == "hello world");
     // req 处于合法但未指定状态；std::string 移动后为空
-    assert(req.content_.empty());
+    CHECK(req.content_.empty());
 
     std::cout << "test_message: PASSED\n";
     return 0;
