@@ -10,6 +10,9 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
+#include "common/message.h"
+#include "server/core/encoder.h"
+
 int main() {
     int client_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (client_fd == -1) {
@@ -28,14 +31,39 @@ int main() {
     }
     std::cout << "Connected to server\n";
 
-    const std::string msg =
-        R"({"chat_type_":0,"client_msg_id_":"hash","content_":"Hello World!","from_uid_":"Neuroil","msg_type_":0,"to_uid_":"Evil"})";
-    send(client_fd, msg.c_str(), msg.size(), 0);
+    //
 
-    char buffer[1024] = {0};
+    types::RequestMsg r{};
+    r.from_uid_ = "nana";
+    r.to_uid_ = "hoshi";
+    r.chat_type_ = types::ChatTypes::single;
+    r.msg_type_ = types::MessageTypes::text;
+    r.client_msg_id_ = "shizuka";
+    r.content_ = "take a shower";
+
+    FrameHeader f{};
+    f.opcode_ = core::Opcode::request;
+    f.status_ = core::Status::ok;
+
+    //
+    std::vector<std::byte> bytes;
+    bytes.resize(512);
+
+    core::RequestMessagePack r_msg_pack(f, r);
+
+    uint32_t out_len = 0;
+    core::Encoder::encode(r_msg_pack, bytes, out_len);
+    send(client_fd, bytes.data(), bytes.size(), 0);
+
+    char buffer[512] = {0};
     int len = recv(client_fd, buffer, sizeof(buffer), 0);
     if (len > 0) {
-        std::cout << "Server says: " << buffer << "\n";
+        for (int i = 6; i < sizeof(buffer); ++i) {
+            if (i % 150 == 0) std::cout << "\n";
+
+            std::cout << buffer[i];
+        }
+        std::cout << std::endl;
     }
 
     // 5. 关闭连接

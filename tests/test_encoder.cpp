@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-#include "core/encoder.h"
+#include "server/core/encoder.h"
 
 namespace {
     // ---------------------------------------------------------------------

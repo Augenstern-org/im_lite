@@ -5,7 +5,7 @@
 #ifndef COM_LITE_CONTROLLER_H
 #define COM_LITE_CONTROLLER_H
 
-#include "coordination/users_group.h"
+#include "server/coordination/users_group.h"
 
 namespace controller {
     class Controller {

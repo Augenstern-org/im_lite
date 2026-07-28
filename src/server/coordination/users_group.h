@@ -7,7 +7,7 @@
 
 #include <cstdint>
 #include <unordered_map>
-#include "user.h"
+#include "server/coordination/user.h"
 
 namespace coordination {
     class UsersGroup {

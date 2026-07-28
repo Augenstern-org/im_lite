@@ -5,8 +5,8 @@
 #ifndef COM_LITE_ENCODER_H
 #define COM_LITE_ENCODER_H
 
-#include "binary_code.h"
-#include "message_pack.h"
+#include "server/core/binary_code.h"
+#include "server/core/message_pack.h"
 #include "json.hpp"
 #include "common/io_status.h"
 #include "common/message.h"

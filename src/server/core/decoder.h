@@ -5,14 +5,14 @@
 #ifndef COM_LITE_DECODER_H
 #define COM_LITE_DECODER_H
 
-#include "binary_code.h"
-#include "message_pack.h"
+#include "server/core/binary_code.h"
+#include "server/core/message_pack.h"
 #include "json.hpp"
 #include "common/io_status.h"
 #include "common/message.h"
 #include <vector>
 #include <netinet/in.h>
-#include "encoder.h"
+#include "server/core/encoder.h"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>

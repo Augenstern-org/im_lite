@@ -18,8 +18,8 @@
 #include <string>
 #include <vector>
 
-#include "core/decoder.h"
-#include "core/encoder.h"
+#include "server/core/decoder.h"
+#include "server/core/encoder.h"
 
 namespace {
     types::RequestMsg msg_gv1() {

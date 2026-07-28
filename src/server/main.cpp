@@ -4,8 +4,8 @@
 
 #include <iostream>
 
-#include "controller/controller.h"
-#include "core/core.h"
+#include "server/controller/controller.h"
+#include "server/core/core.h"
 
 int main() {
     // 初始化 Core Controller UsersGroup

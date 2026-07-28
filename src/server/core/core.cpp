@@ -2,7 +2,7 @@
 // Created by Neuroil on 2026/7/15.
 //
 
-#include "core.h"
+#include "server/core/core.h"
 
 #include <cerrno>
 #include <cstring>
@@ -13,10 +13,10 @@
 #include <sys/fcntl.h>
 #include <sys/socket.h>
 
-#include "frame_header.h"
-#include "binary_code.h"
-#include "encoder.h"
-#include "decoder.h"
+#include "server/core/frame_header.h"
+#include "server/core/binary_code.h"
+#include "server/core/encoder.h"
+#include "server/core/decoder.h"
 
 namespace core {
     Core::Core(uint16_t port, int backlog) noexcept : port_(port), backlog_(backlog) {}
@@ -153,26 +153,26 @@ namespace core {
             std::vector<std::byte>& in = conn.read_buffer();
             if (!in.empty()) {
                 // 解码
-                // RequestMessagePack rmp;
-                // types::IoStatus dst = Decoder::decode(in, rmp);
+                RequestMessagePack rmp;
+                types::IoStatus dst = Decoder::decode(in, rmp);
                 // 按 opcode 执行操作
                 // 组装
                 // 编码
 
-                types::RequestMsg msg;
-                msg.chat_type_     = types::ChatTypes::single;
-                msg.msg_type_      = types::MessageTypes::text;
-                msg.from_uid_      = "Neuroil";
-                msg.to_uid_        = "Evil";
-                msg.client_msg_id_ = "hash";
-                msg.content_       = "Hello World!";
+                // types::RequestMsg msg;
+                // msg.chat_type_     = types::ChatTypes::single;
+                // msg.msg_type_      = types::MessageTypes::text;
+                // msg.from_uid_      = "Neuroil";
+                // msg.to_uid_        = "Evil";
+                // msg.client_msg_id_ = "hash";
+                // msg.content_       = "Hello World! Hi Nana";
 
-                FrameHeader            fh(Opcode::ack, Status::ok);
-                RequestMessagePack     rmp(fh, msg);
+                // FrameHeader            fh(Opcode::ack, Status::ok);
+                // RequestMessagePack     rmp(fh, msg);
+
                 std::vector<std::byte> result;
 
                 result.resize(max_message_body_length + FrameHeader::wire_size);
-
                 uint32_t buf_size = 0;
 
                 types::IoStatus est = Encoder::encode(rmp, result, buf_size);

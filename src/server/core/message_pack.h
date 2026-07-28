@@ -6,7 +6,7 @@
 #define COM_LITE_MESSAGE_PACK_H
 
 #include "common/message.h"
-#include "frame_header.h"
+#include "server/core/frame_header.h"
 
 namespace core {
     struct RequestMessagePack {

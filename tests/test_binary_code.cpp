@@ -1,4 +1,4 @@
-#include "core/binary_code.h"
+#include "server/core/binary_code.h"
 
 #include <cassert>
 #include <cstdint>

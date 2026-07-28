@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-#include "core/decoder.h"
+#include "server/core/decoder.h"
 
 namespace {
     // ---------------------------------------------------------------------

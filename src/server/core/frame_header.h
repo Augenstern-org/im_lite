@@ -5,7 +5,7 @@
 #ifndef COM_LITE_FRAME_HEADER_H
 #define COM_LITE_FRAME_HEADER_H
 
-#include "binary_code.h"
+#include "server/core/binary_code.h"
 
 /*
  *
