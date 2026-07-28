@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 #include "common/message.h"
-#include "core/connections.h"
+#include "server/core/connections.h"
 
 namespace core {
     class Core {

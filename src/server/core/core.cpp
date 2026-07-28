@@ -16,6 +16,7 @@
 #include "frame_header.h"
 #include "binary_code.h"
 #include "encoder.h"
+#include "decoder.h"
 
 namespace core {
     Core::Core(uint16_t port, int backlog) noexcept : port_(port), backlog_(backlog) {}
@@ -152,9 +153,12 @@ namespace core {
             std::vector<std::byte>& in = conn.read_buffer();
             if (!in.empty()) {
                 // 解码
+                // RequestMessagePack rmp;
+                // types::IoStatus dst = Decoder::decode(in, rmp);
                 // 按 opcode 执行操作
                 // 组装
                 // 编码
+
                 types::RequestMsg msg;
                 msg.chat_type_     = types::ChatTypes::single;
                 msg.msg_type_      = types::MessageTypes::text;
