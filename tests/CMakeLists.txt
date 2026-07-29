@@ -13,3 +13,22 @@ add_com_lite_test(Message    test_message)
 add_com_lite_test(Encoder    test_encoder)
 add_com_lite_test(Decoder    test_decoder)
 add_com_lite_test(RoundTrip  test_roundtrip)
+
+# 头文件自足性：src/ 下每个头文件各生成一个只包含它自己的翻译单元，
+# 全部链进 test_headers。断言在编译期完成 —— 头文件若少写自己直接用到的
+# #include，本目标即编不过，不会再靠包含顺序侥幸通过。
+file(GLOB_RECURSE COM_LITE_HEADERS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*.h)
+
+set(COM_LITE_HEADER_TUS "")
+foreach(header IN LISTS COM_LITE_HEADERS)
+    file(RELATIVE_PATH COM_LITE_HEADER ${CMAKE_SOURCE_DIR}/src ${header})
+    string(REPLACE "/" "_" tu_name ${COM_LITE_HEADER})
+    string(REPLACE "." "_" tu_name ${tu_name})
+    set(tu ${CMAKE_CURRENT_BINARY_DIR}/self_contained/${tu_name}.cpp)
+    configure_file(header_self_contained.cpp.in ${tu} @ONLY)
+    list(APPEND COM_LITE_HEADER_TUS ${tu})
+endforeach()
+
+add_executable(test_headers test_headers.cpp ${COM_LITE_HEADER_TUS})
+target_link_libraries(test_headers PRIVATE com_lite_base)
+add_test(NAME Headers COMMAND test_headers)

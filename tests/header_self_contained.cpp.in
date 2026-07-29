@@ -1,0 +1,6 @@
+// 由 tests/CMakeLists.txt 自动生成，请勿手工编辑。
+//
+// 验证 "@COM_LITE_HEADER@" 是自足的：单独占一个翻译单元、在任何其他头文件之前
+// 被包含时也能编过。第二次包含用于验证 include guard 生效。
+#include "@COM_LITE_HEADER@"
+#include "@COM_LITE_HEADER@"

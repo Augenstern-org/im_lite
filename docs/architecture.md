@@ -4,21 +4,36 @@
 
 ## 1. 现状
 
-当前代码是一个可运行的最小原型，全部逻辑集中在单个函数里：
-
-- `src/main.cpp`（约 107 行）：一个基于 epoll 的 TCP 回显服务端，已实测支持多客户端并发连接。socket 创建、`bind`/`listen`、非阻塞设置、epoll 事件循环、`accept` 新连接、读数据并原样回写，全部内联在 `main()` 中。这是本设计要拆分的对象。
-- `src/core/core.h`、`src/core/core.cpp`：空骨架（`namespace core { class Core {}; }`），尚未填充。
-- `src/common/message.h`：已起草的消息类型——`MessageBase`（`from_uid_` / `to_uid_` / `chat_type_` / `client_msg_id_` / `msg_type_`），以及 `RequestMsg`、`ResponseMsg`。
-- `src/common/io_status.h`：`IoStatus` 枚举（`Ok` / `Closed` / `WouldBlock` / `Interrupted` / `FrameTooLong` / `Timeout` / `Error`）及 `toString`。该文件从其它项目复制而来，部分枚举值的语义在本项目中被重新赋义（见 §2.4）。
-
-`main()` 里数据实际经过一条表示形式不断变化的链路，每一次形式变化就是一条应被切开的边界：
+原型阶段的全部逻辑集中在单个 `main()` 里。数据在其中经过一条表示形式不断变化的链路，每一次形式变化就是一条应被切开的边界：
 
 ```
 fd + 事件   →   字节流   →   一帧一帧   →   Message   →   业务决策
  (epoll)      (读缓冲)      (按帧切分)     (消息类型)     (该怎么回应)
 ```
 
-原型把这几条边界全部焊死在 `main()` 中，因此无法独立演进。第一版设计的目标就是沿这些边界把职责拆开。
+原型把这几条边界全部焊死在 `main()` 中，因此无法独立演进。第一版设计的目标就是沿这些边界把职责拆开。**§5 迁移路线的前三步已完成**，当前目录结构如下：
+
+```
+src/
+  common/      三层与客户端共同的契约类型
+    message.h        Message（消息值对象）、ChatTypes / MessageTypes
+    frame_header.h   FrameHeader（帧头 + 编译期 wire_size）
+    message_pack.h   MessagePack（FrameHeader + Message）
+    io_status.h      IoStatus 枚举及 toString
+  server/
+    main.cpp         装配 Core / Controller，注册回调，run()
+    core/            binary_code.h（Opcode / Status）、connections.*、core.*、encoder.h、decoder.h
+    controller/      controller.h（按 opcode 派发，当前仍为回显）
+    coordination/    user.h、users_group.h、assembler.h（后两者尚为骨架）
+  client/
+    main.cpp         调试用客户端：连接 → 编码发一帧 → 打印回显
+include/       json.hpp（第三方单头文件库）
+tests/         ctest 目标，见 §6
+```
+
+头文件搜索根全项目只有两个——`src/` 与 `include/`，由 CMake 的 `com_lite_base` INTERFACE 目标统一提供，其余目标一律通过 `target_link_libraries` 继承。因此**同一个头文件在任何位置只有一种写法**：从 `src/` 起的完整路径，如 `"server/core/encoder.h"`、`"common/message.h"`，不使用相对路径。
+
+`src/common/io_status.h` 从其它项目复制而来，部分枚举值的语义在本项目中被重新赋义（见 §2.4）。
 
 ## 2. 三层架构
 
@@ -88,10 +103,16 @@ flowchart TD
 
 ### 2.5 消息对象的生命周期与所有权
 
-`Message`（`RequestMsg` / `ResponseMsg`）建模为**单一所有者、单次消费**的值对象，语义上模仿移动：一条消息被创建一次、消费一次，不共享、不复制。由于中间隔着网络，这个"移动"由编解码器在两端物理实现：
+`Message` 建模为**单一所有者、单次消费**的值对象，语义上模仿移动：一条消息被创建一次、消费一次，不共享、不复制。由于中间隔着网络，这个"移动"由编解码器在两端物理实现：
 
-- **入站 `RequestMsg`**：客户端创建 → 序列化为字节过网 → 服务端**解码器重建**出 `RequestMsg` → 业务层（控制层 / 协调层）消费一次。
-- **出站 `ResponseMsg`**：协调层创建 → 服务端**编码器消费**（读取字段序列化为字节）→ 过网 → 客户端重建。
+- **入站**：客户端创建 → 序列化为字节过网 → 服务端**解码器重建**出 `Message` → 业务层（控制层 / 协调层）消费一次。
+- **出站**：协调层创建 → 服务端**编码器消费**（读取字段序列化为字节）→ 过网 → 客户端重建。
+
+**请求 / 响应不再由类型区分**。原设计以 `MessageBase` 为基类派生 `RequestMsg`（含 `content_`）与 `ResponseMsg`（含 `server_seq_`），现塌缩为单个 `Message`，`content_` 上提为公共字段。帧的用途改由帧头的 `opcode` 单独承载（§2.4）——一条帧是请求还是响应，是**线上协议**的事实，不必在 C++ 类型系统里再表达一次。随之 `is_init()` 与 `is_valid()` 合并为单个 `Message::is_valid()`，要求六个字段全部非默认。
+
+`MessagePack`（`common/message_pack.h`）把 `FrameHeader` 与 `Message` 绑成一个整体，是编解码器与业务层之间实际传递的单位。
+
+> 未决：`ResponseMsg::server_seq_`（服务端消息序号）随塌缩一并去掉，尚未确定它应以何种形式回归——是 `Message` 的可选字段，还是移进帧头。
 
 即"编码器消费、解码器重建"是这条移动链在网络两端的落点。
 
@@ -121,7 +142,11 @@ epoll 在核心层，数据到达时由核心层先拿到并解码，再向上�
 
 ### 3.3 Message 是三层共同契约
 
-`Message` 相关类型（`MessageBase` / `RequestMsg` / `ResponseMsg`）是三层之间传递的数据契约：核心层编解码要认识它，协调层执行流程也要认识它。因此它不归任何单独一层所有，放在 `src/common/`（与当前位置一致）。
+`Message` 是三层之间传递的数据契约：核心层编解码要认识它，协调层执行流程也要认识它。因此它不归任何单独一层所有，放在 `src/common/`。
+
+同理，`FrameHeader` 与 `MessagePack` 也已从 `server/core/` 迁入 `src/common/`——调试客户端要构帧发包，这两个类型不再是服务端私有。
+
+> 遗留：`encoder.h` / `decoder.h` 仍在 `server/core/` 下，客户端只能写 `#include "server/core/encoder.h"`；`common/frame_header.h` 又反过来依赖 `server/core/binary_code.h`（`Opcode` / `Status` 尚在 `core::` 命名空间）。编解码是通信双方共用的能力，"什么算 common"这条线目前是按遇到问题的先后划的，不是按职责划的，需要一次统一定夺。
 
 ### 3.4 连接生命周期与 fd 复用
 
@@ -150,15 +175,39 @@ fd 会被操作系统回收复用，这是即时通信服务端最典型的串�
 
 分步进行，不要求一次到位：
 
-1. **抽出 socket + epoll 装配**：把 `main.cpp` 中的监听 socket 创建与 epoll 循环搬入核心层。`main()` 收敛为"构建核心层 → 运行"。这是最机械、最安全的一刀。
-2. **每条客户端连接对象化**：以连接对象（持有 fd 与读 / 写缓冲）替代原型中裸 `buf` 与"发完不管"的 `send`。读写返回接入 `IoStatus`。此步同时修正原型中"写返回 `EAGAIN` 时静默丢数据"的问题。
-3. **插入编解码（帧切分）**：在核心层读缓冲的字节与 `Message` 之间加入分帧，采用固定头 + 可变体的帧结构（见 §2.4）。此步同时接入粘包 / 拆包处理与超长帧防护（`IoStatus::FrameTooLong`）。
-4. **落业务与用户组**：协调层（含用户组）承接完整流程，控制层承接入口校验与派发。当前的回显行为在此替换为按 `uid` 的真实路由。改动这两层时，核心层无需改动。
+1. ✅ **抽出 socket + epoll 装配**：把 `main.cpp` 中的监听 socket 创建与 epoll 循环搬入核心层。`main()` 收敛为"构建核心层 → 运行"。这是最机械、最安全的一刀。
+2. ✅ **每条客户端连接对象化**：以连接对象（持有 fd 与读 / 写缓冲）替代原型中裸 `buf` 与"发完不管"的 `send`。读写返回接入 `IoStatus`。此步同时修正原型中"写返回 `EAGAIN` 时静默丢数据"的问题。
+3. 🚧 **插入编解码（帧切分）**：在核心层读缓冲的字节与 `Message` 之间加入分帧，采用固定头 + 可变体的帧结构（见 §2.4）。编解码器本身已完成并有黄金字节测试兜底；**分帧状态机尚未实现**——`Decoder::decode()` 目前假定调用方已切出完整帧，粘包 / 拆包与超长帧防护（`IoStatus::FrameTooLong`）都还没有落点。
+4. 🚧 **落业务与用户组**：协调层（含用户组）承接完整流程，控制层承接入口校验与派发。已完成的是**接线**：`Core` 通过 `set_message_handler()` 注册回调，签名为
 
-## 6. 待定项
+   ```cpp
+   std::function<void(int fd, const MessagePack& in, std::vector<MessagePack>& out_queue)>
+   ```
+
+   出参取消息队列而非单个返回值，因为一条入站消息可能产生多条出站帧（转发的 request 与回给发送方的 response 是两条独立的帧）。核心层不再自造消息，只负责搬运。**尚未完成**：`Controller::process()` 仍把入站包原样压回队列（回显），按 opcode 的三条分派路径与 `UsersGroup` 的真实路由都还没接上——`fd` 参数已经传到控制层但没有被使用。
+
+## 6. 验证
+
+`ctest` 下七个目标，分为两类。
+
+**编解码正确性**——三类断言正交覆盖，每类钉死一条不重叠的契约边（详见 2026-07-27 日志）：
+
+| 目标 | 断言类别 | 关键纪律 |
+|---|---|---|
+| `Encoder` | 出站黄金字节 | 不调用 `decode`，`htonl` / `ntohl` 同时写错也无法互相掩盖 |
+| `Decoder` | 入站黄金字节 | 绝不调用 `Encoder`，黄金向量由手工移位构帧 |
+| `RoundTrip` | 往返可组合性 | 只证明两者彼此一致，不证明任一方在线格式正确 |
+
+**类型与头文件**：`IoStatus` / `BinaryCode` / `Message` 覆盖各自类型的值域与不变式；`Headers` 覆盖头文件自足性——`src/` 下每个头文件各生成一个只包含它自己的翻译单元（`tests/header_self_contained.cpp.in`）单独编译一次。断言在编译期完成：头文件若少写了自己直接用到的 `#include`，该目标即编不过，不会再靠"恰好被别的头文件先包含"而侥幸通过。
+
+> 该检查的由来：`binary_code.h` 曾删掉 `<cstdint>`，其余翻译单元都靠 `message.h → json.hpp` 间接引入而编过，只有直接包含它的 `test_binary_code.cpp` 报错。这类隐式传递依赖必须由机制兜住，不能靠人记。
+
+## 7. 待定项
 
 - **登录 / 握手协议**（未决）：uid ↔ fd 绑定发生在登录时，登录指令的具体形态（认证方式、`msg_type_` 取值）尚未定义。
-- **`MAX_BODY_LEN` 取值**（未决）：超长帧防护的上限常量已定为机制（§2.4），具体数值待定。
+- **超长帧防护**（部分落地）：上限常量已取值——`common/message.h` 中 `max_message_body_length = 65530`，编码侧按它分配缓冲。但**解码侧尚未据此拒绝**：`Decoder::decode()` 只校验"缓冲内剩余字节够不够 `body_len`"，没有校验 `body_len` 是否超过上限，`IoStatus::FrameTooLong` 至今没有产出点。该校验需与分帧状态机（§5 步 3）一并落地。
+- **`ResponseMsg::server_seq_` 的去向**（未决）：随消息模型塌缩去掉，尚未确定以何种形式回归（见 §2.5）。
+- **`common` 与 `server` 的边界**（未决）：见 §3.3 遗留说明。
 - **离线消息暂存**（暂不实现）：目标 uid 当前无在线 fd 时的处理暂不落地，仅在协调层预留接口占位；未来可能以数据库承接。分层边界不受影响。
 
 > 已敲定并移入正文的原待定项：序列化采用 JSON（§2.4）；消息对象按单一所有者 / 单次消费的移动语义建模，字段改为 `std::vector<std::byte>`，JSON 兼容通过 `adl_serializer<std::byte>` 特化实现（§2.5）。

@@ -8,6 +8,9 @@ AlignConsecutiveAssignments: true
 AlignConsecutiveDeclarations: true
 AlignOperands: false
 AlignTrailingComments: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortIfStatementsOnASingleLine: true
+AllowShortLoopsOnASingleLine: true
 AlwaysBreakTemplateDeclarations: Yes
 BinPackArguments: false
 BinPackParameters: false
