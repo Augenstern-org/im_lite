@@ -22,8 +22,8 @@
 #include "server/core/encoder.h"
 
 namespace {
-    types::RequestMsg msg_gv1() {
-        types::RequestMsg m;
+    Message msg_gv1() {
+        Message m;
         m.chat_type_     = types::ChatTypes::single;
         m.msg_type_      = types::MessageTypes::text;
         m.from_uid_      = "Neuroil";
@@ -33,12 +33,12 @@ namespace {
         return m;
     }
 
-    types::RequestMsg msg_gv2() {
+    Message msg_gv2() {
         std::string content;
         for (int i = 0; i < 15; ++i) content += "0123456789";
         CHECK(content.size() == 150);
 
-        types::RequestMsg m;
+        Message m;
         m.chat_type_     = types::ChatTypes::group;
         m.msg_type_      = types::MessageTypes::pic;
         m.from_uid_      = "alice";
@@ -48,8 +48,8 @@ namespace {
         return m;
     }
 
-    types::RequestMsg msg_gv3() {
-        types::RequestMsg m;
+    Message msg_gv3() {
+        Message m;
         m.chat_type_     = types::ChatTypes::group;
         m.msg_type_      = types::MessageTypes::text;
         m.from_uid_      = "惠惠";
@@ -59,7 +59,7 @@ namespace {
         return m;
     }
 
-    void check_fields_equal(const types::RequestMsg& a, const types::RequestMsg& b) {
+    void check_fields_equal(const Message& a, const Message& b) {
         CHECK(a.chat_type_ == b.chat_type_);
         CHECK(a.msg_type_ == b.msg_type_);
         CHECK(a.from_uid_ == b.from_uid_);
@@ -73,9 +73,9 @@ namespace {
     //        修复前 decode 在这里返回 error（缓冲区尺寸被当成帧长）。
     // ---------------------------------------------------------------------
     void roundtrip_ascii() {
-        const types::RequestMsg  original = msg_gv1();
+        const Message  original = msg_gv1();
         FrameHeader              fh(core::Opcode::request, core::Status::ok);
-        core::RequestMessagePack src(fh, original);
+        MessagePack src(fh, original);
 
         std::vector<std::byte> buf;
         buf.resize(1024, std::byte{0x00});
@@ -85,10 +85,10 @@ namespace {
         CHECK(out_len == 125);
         CHECK(buf.size() == 1024);   // 不裁剪
 
-        core::RequestMessagePack dst;
+        MessagePack dst;
         CHECK(core::Decoder::decode(buf, dst) == types::IoStatus::ok);
 
-        check_fields_equal(original, dst.request_msg_);
+        check_fields_equal(original, dst.msg_);
         CHECK(dst.fh_.body_len_ == 119);
         CHECK(dst.fh_.opcode_ == core::Opcode::request);
         CHECK(dst.fh_.status_ == core::Status::ok);
@@ -98,9 +98,9 @@ namespace {
     // R2
     // ---------------------------------------------------------------------
     void roundtrip_multibyte_len() {
-        const types::RequestMsg  original = msg_gv2();
+        const Message  original = msg_gv2();
         FrameHeader              fh(core::Opcode::response, core::Status::fail);
-        core::RequestMessagePack src(fh, original);
+        MessagePack src(fh, original);
 
         std::vector<std::byte> buf;
         buf.resize(1024, std::byte{0x00});
@@ -109,12 +109,12 @@ namespace {
         CHECK(core::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
         CHECK(out_len == 264);
 
-        core::RequestMessagePack dst;
+        MessagePack dst;
         CHECK(core::Decoder::decode(buf, dst) == types::IoStatus::ok);
 
-        check_fields_equal(original, dst.request_msg_);
+        check_fields_equal(original, dst.msg_);
         CHECK(dst.fh_.body_len_ == 258);
-        CHECK(dst.request_msg_.content_.size() == 150);
+        CHECK(dst.msg_.content_.size() == 150);
         CHECK(dst.fh_.opcode_ == core::Opcode::response);
         CHECK(dst.fh_.status_ == core::Status::fail);
     }
@@ -123,9 +123,9 @@ namespace {
     // R3
     // ---------------------------------------------------------------------
     void roundtrip_cjk() {
-        const types::RequestMsg  original = msg_gv3();
+        const Message  original = msg_gv3();
         FrameHeader              fh(core::Opcode::request, core::Status::ok);
-        core::RequestMessagePack src(fh, original);
+        MessagePack src(fh, original);
 
         std::vector<std::byte> buf;
         buf.resize(1024, std::byte{0x00});
@@ -134,14 +134,14 @@ namespace {
         CHECK(core::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
         CHECK(out_len == 126);
 
-        core::RequestMessagePack dst;
+        MessagePack dst;
         CHECK(core::Decoder::decode(buf, dst) == types::IoStatus::ok);
 
-        check_fields_equal(original, dst.request_msg_);
-        CHECK(dst.request_msg_.from_uid_ == "惠惠");
-        CHECK(dst.request_msg_.content_ == "你好世界");
-        CHECK(dst.request_msg_.from_uid_.size() == 6);
-        CHECK(dst.request_msg_.content_.size() == 12);
+        check_fields_equal(original, dst.msg_);
+        CHECK(dst.msg_.from_uid_ == "惠惠");
+        CHECK(dst.msg_.content_ == "你好世界");
+        CHECK(dst.msg_.from_uid_.size() == 6);
+        CHECK(dst.msg_.content_.size() == 12);
         CHECK(dst.fh_.body_len_ == 120);
     }
 
@@ -160,7 +160,7 @@ namespace {
 
         for (const Case& c : cases) {
             FrameHeader              fh(c.op, c.st);
-            core::RequestMessagePack src(fh, msg_gv1());
+            MessagePack src(fh, msg_gv1());
 
             std::vector<std::byte> buf;
             buf.resize(1024, std::byte{0x00});
@@ -168,7 +168,7 @@ namespace {
 
             CHECK(core::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
 
-            core::RequestMessagePack dst;
+            MessagePack dst;
             CHECK(core::Decoder::decode(buf, dst) == types::IoStatus::ok);
             CHECK(dst.fh_.opcode_ == c.op);
             CHECK(dst.fh_.status_ == c.st);
@@ -179,9 +179,9 @@ namespace {
     // R5 —— 裁剪到 out_len 的精确尺寸缓冲区同样成立
     // ---------------------------------------------------------------------
     void roundtrip_trimmed_buffer() {
-        const types::RequestMsg  original = msg_gv1();
+        const Message  original = msg_gv1();
         FrameHeader              fh(core::Opcode::request, core::Status::ok);
-        core::RequestMessagePack src(fh, original);
+        MessagePack src(fh, original);
 
         std::vector<std::byte> buf;
         buf.resize(1024, std::byte{0x00});
@@ -191,10 +191,10 @@ namespace {
         buf.resize(out_len);
         CHECK(buf.size() == 125);
 
-        core::RequestMessagePack dst;
+        MessagePack dst;
         CHECK(core::Decoder::decode(buf, dst) == types::IoStatus::ok);
 
-        check_fields_equal(original, dst.request_msg_);
+        check_fields_equal(original, dst.msg_);
         CHECK(dst.fh_.body_len_ == 119);
     }
 } // namespace

@@ -22,14 +22,14 @@ namespace core {
      * -------------------------------------------------------         *
      */
 
-    enum class Opcode : uint8_t {
+    enum class Opcode : std::uint8_t {
         _init_   = 0xff,
         ack      = 0,
         request  = 1,
         response = 2
     };
 
-    enum class Status : uint8_t {
+    enum class Status : std::uint8_t {
         _init_ = 0xff,
         ok     = 0,
         fail   = 1
@@ -44,7 +44,7 @@ namespace core {
             case Opcode::response: return true;
             case Opcode::_init_:   return false;
         }
-        return false;   // 不在枚举列表中的线上字节
+        return false; // 不在枚举列表中的线上字节
     }
 
     constexpr bool is_known_status(std::uint8_t raw) noexcept {

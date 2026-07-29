@@ -19,9 +19,14 @@ int main() {
     controller::Controller controller;
 
     // 核心层只上报 fd 断开，由上层决定做什么（步 4 后此处改为驱动 UsersGroup 解绑）
-    core.set_disconnect_handler([](int fd) {
-        std::cout << "Client disconnected: " << fd << std::endl;
-    });
+    core.set_disconnect_handler(
+        [](int fd) {
+            std::cout << "Client disconnected: " << fd << std::endl;
+        }
+    );
+
+    // 注册消息处理接口
+    core.set_message_handler(controller::Controller::process);
 
     core.run();
 

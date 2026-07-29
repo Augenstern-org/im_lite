@@ -5,6 +5,9 @@
 #ifndef COM_LITE_FRAME_HEADER_H
 #define COM_LITE_FRAME_HEADER_H
 
+#include <cstddef>
+#include <cstdint>
+
 #include "server/core/binary_code.h"
 
 /*
@@ -20,13 +23,13 @@
 struct FrameHeader {
     core::Opcode opcode_   = core::Opcode::_init_;
     core::Status status_   = core::Status::_init_;
-    uint32_t     body_len_ = 0;
+    std::uint32_t body_len_ = 0;
 
     // 编译期计算出帧头大小
     static constexpr std::size_t wire_size =
-        sizeof(decltype(FrameHeader::opcode_))
-        + sizeof(decltype(FrameHeader::status_))
-        + sizeof(decltype(FrameHeader::body_len_));
+            sizeof(decltype(opcode_))
+            + sizeof(decltype(status_))
+            + sizeof(decltype(body_len_));
 
     FrameHeader() = default;
 

@@ -69,8 +69,8 @@ namespace {
     // 消息构造
     // ---------------------------------------------------------------------
 
-    types::RequestMsg msg_gv1() {
-        types::RequestMsg m;
+    Message msg_gv1() {
+        Message m;
         m.chat_type_     = types::ChatTypes::single;
         m.msg_type_      = types::MessageTypes::text;
         m.from_uid_      = "Neuroil";
@@ -80,8 +80,8 @@ namespace {
         return m;
     }
 
-    types::RequestMsg msg_gv2() {
-        types::RequestMsg m;
+    Message msg_gv2() {
+        Message m;
         m.chat_type_     = types::ChatTypes::group;
         m.msg_type_      = types::MessageTypes::pic;
         m.from_uid_      = "alice";
@@ -91,8 +91,8 @@ namespace {
         return m;
     }
 
-    types::RequestMsg msg_gv3() {
-        types::RequestMsg m;
+    Message msg_gv3() {
+        Message m;
         m.chat_type_     = types::ChatTypes::group;
         m.msg_type_      = types::MessageTypes::text;
         m.from_uid_      = "惠惠";
@@ -102,8 +102,8 @@ namespace {
         return m;
     }
 
-    types::RequestMsg msg_gv4() {
-        types::RequestMsg m;
+    Message msg_gv4() {
+        Message m;
         m.chat_type_     = types::ChatTypes::single;
         m.msg_type_      = types::MessageTypes::text;
         m.from_uid_      = "";
@@ -124,7 +124,7 @@ namespace {
     // ---------------------------------------------------------------------
     void encode_golden_ascii() {
         FrameHeader              fh(core::Opcode::request, core::Status::ok);
-        core::RequestMessagePack rmp(fh, msg_gv1());
+        MessagePack rmp(fh, msg_gv1());
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0x00});
         std::uint32_t          out_len = 0;
@@ -160,7 +160,7 @@ namespace {
         const std::string kJsonGv2 = gv2_json();
 
         FrameHeader              fh(core::Opcode::response, core::Status::fail);
-        core::RequestMessagePack rmp(fh, msg_gv2());
+        MessagePack rmp(fh, msg_gv2());
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0x00});
         std::uint32_t          out_len = 0;
@@ -184,7 +184,7 @@ namespace {
     // ---------------------------------------------------------------------
     void encode_golden_utf8_cjk() {
         FrameHeader              fh(core::Opcode::request, core::Status::ok);
-        core::RequestMessagePack rmp(fh, msg_gv3());
+        MessagePack rmp(fh, msg_gv3());
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0x00});
         std::uint32_t          out_len = 0;
@@ -216,7 +216,7 @@ namespace {
     // ---------------------------------------------------------------------
     void encode_sets_body_len_side_effect() {
         FrameHeader              fh(core::Opcode::request, core::Status::ok);
-        core::RequestMessagePack rmp(fh, msg_gv1());
+        MessagePack rmp(fh, msg_gv1());
         rmp.fh_.body_len_ = 999;
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0x00});
@@ -231,7 +231,7 @@ namespace {
     // ---------------------------------------------------------------------
     void encode_does_not_write_past_frame() {
         FrameHeader              fh(core::Opcode::request, core::Status::ok);
-        core::RequestMessagePack rmp(fh, msg_gv1());
+        MessagePack rmp(fh, msg_gv1());
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0xAA});
         std::uint32_t          out_len = 0;
@@ -253,11 +253,11 @@ namespace {
         const std::string bad = std::string("bad\xFF\xFE" "end");
         CHECK(bad.size() == 8);
 
-        types::RequestMsg m = msg_gv1();
+        Message m = msg_gv1();
         m.content_          = bad;
 
         FrameHeader              fh(core::Opcode::request, core::Status::ok);
-        core::RequestMessagePack rmp(fh, m);
+        MessagePack rmp(fh, m);
         rmp.fh_.body_len_ = 777;
 
         std::vector<std::byte> buf     = fresh_buf(1024, std::byte{0xAA});
@@ -277,7 +277,7 @@ namespace {
     // ---------------------------------------------------------------------
     void encode_min_frame_empty_strings() {
         FrameHeader              fh(core::Opcode::ack, core::Status::ok);
-        core::RequestMessagePack rmp(fh, msg_gv4());
+        MessagePack rmp(fh, msg_gv4());
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0x00});
         std::uint32_t          out_len = 0;
@@ -295,7 +295,7 @@ namespace {
     // E8 —— 编译期：encode 必须是 noexcept
     // ---------------------------------------------------------------------
     void encode_is_noexcept() {
-        static_assert(noexcept(core::Encoder::encode(std::declval<core::RequestMessagePack&>(),
+        static_assert(noexcept(core::Encoder::encode(std::declval<MessagePack&>(),
                                                      std::declval<std::vector<std::byte>&>(),
                                                      std::declval<std::uint32_t&>())),
                       "Encoder::encode must be noexcept");

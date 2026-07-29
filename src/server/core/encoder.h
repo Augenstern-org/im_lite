@@ -5,15 +5,13 @@
 #ifndef COM_LITE_ENCODER_H
 #define COM_LITE_ENCODER_H
 
-#include "server/core/binary_code.h"
-#include "server/core/message_pack.h"
+#include "common/message_pack.h"
 #include "json.hpp"
 #include "common/io_status.h"
 #include "common/message.h"
 #include <vector>
 #include <netinet/in.h>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <string>
 
@@ -40,7 +38,7 @@ namespace core {
 
         // body_encoder
         // 不是 noexcept：nlohmann::json 构造可能 std::bad_alloc，dump() 遇非法 UTF-8 抛 type_error.316。
-        static uint32_t body_encoder(const types::RequestMsg& request_msg, std::vector<std::byte>& out_buf) {
+        static uint32_t body_encoder(const Message& request_msg, std::vector<std::byte>& out_buf) {
             nlohmann::json j = request_msg;
             // 四个参数全部显式钉住，与当前 j.dump() 逐字节等价；防止上游默认值变更冲掉黄金向量。
             const std::string serialized = j.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict);
@@ -53,19 +51,21 @@ namespace core {
         }
 
     public:
-        Encoder() = default;
+        Encoder()  = default;
         ~Encoder() = default;
 
         // 出错后置条件：返回 error 时 out_buf 一字节未动 —— 所有可能抛出的操作（json 构造、dump）
         // 都在第一次写入之前完成。若将来重构为直接向 out_buf 流式写入，此保证必须重新审视。
-        static types::IoStatus encode(RequestMessagePack& rmp,
-                                      std::vector<std::byte>& out_buf,
-                                      uint32_t& out_len) noexcept {
+        static types::IoStatus encode(
+            MessagePack&            rmp,
+            std::vector<std::byte>& out_buf,
+            uint32_t&               out_len
+        ) noexcept {
             // TODO：编码器不做有效性校验，由上层机制保证资源有效。
             // if (!rmp.is_valid()) return types::IoStatus::error;
             out_len = 0;
             try {
-                const uint32_t len = body_encoder(rmp.request_msg_, out_buf);
+                const uint32_t len = body_encoder(rmp.msg_, out_buf);
                 rmp.fh_.body_len_  = len;
                 header_encoder(rmp.fh_, out_buf);
                 out_len = static_cast<uint32_t>(FrameHeader::wire_size) + len;

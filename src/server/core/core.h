@@ -5,12 +5,11 @@
 #ifndef COM_LITE_CORE_H
 #define COM_LITE_CORE_H
 
-#include <cstdint>
 #include <functional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include "common/message.h"
+#include "common/message_pack.h"
 #include "server/core/connections.h"
 
 namespace core {
@@ -25,9 +24,14 @@ namespace core {
         void run();
 
         // 回调函数
-        using message_handler    = std::function<void(int fd, types::RequestMsg)>;
+        using message_handler = std::function<void(
+            int                       fd,
+            const MessagePack&        in,
+            std::vector<MessagePack>& out_queue
+        )>;
         using disconnect_handler = std::function<void(int fd)>;
 
+        void set_message_handler(message_handler h) { message_handler_ = std::move(h); }
         void set_disconnect_handler(disconnect_handler h) { disconnect_handler_ = std::move(h); }
 
     private:
@@ -45,6 +49,7 @@ namespace core {
 
         std::unordered_map<int, Connections> conns_;
         std::vector<int>                     pending_close_;
+        message_handler                      message_handler_;
         disconnect_handler                   disconnect_handler_;
     };
 } // namespace core

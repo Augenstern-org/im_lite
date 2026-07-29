@@ -13,7 +13,7 @@
 #include <sys/fcntl.h>
 #include <sys/socket.h>
 
-#include "server/core/frame_header.h"
+#include "common/frame_header.h"
 #include "server/core/binary_code.h"
 #include "server/core/encoder.h"
 #include "server/core/decoder.h"
@@ -153,41 +153,38 @@ namespace core {
             std::vector<std::byte>& in = conn.read_buffer();
             if (!in.empty()) {
                 // 解码
-                RequestMessagePack rmp;
+                MessagePack     rmp;
                 types::IoStatus dst = Decoder::decode(in, rmp);
                 // 按 opcode 执行操作
-                // 组装
+                std::vector<MessagePack> send_queue;
+                message_handler_(fd, rmp, send_queue);
+
                 // 编码
+                std::size_t result_size = max_message_body_length + FrameHeader::wire_size;
 
-                // types::RequestMsg msg;
-                // msg.chat_type_     = types::ChatTypes::single;
-                // msg.msg_type_      = types::MessageTypes::text;
-                // msg.from_uid_      = "Neuroil";
-                // msg.to_uid_        = "Evil";
-                // msg.client_msg_id_ = "hash";
-                // msg.content_       = "Hello World! Hi Nana";
+                std::vector<uint32_t> buf_sizes(send_queue.size(), 0);
+                std::vector<std::vector<std::byte>> results(
+                    send_queue.size(),
+                    std::vector<std::byte>(result_size, std::byte{0x00})
+                );
 
-                // FrameHeader            fh(Opcode::ack, Status::ok);
-                // RequestMessagePack     rmp(fh, msg);
-
-                std::vector<std::byte> result;
-
-                result.resize(max_message_body_length + FrameHeader::wire_size);
-                uint32_t buf_size = 0;
-
-                types::IoStatus est = Encoder::encode(rmp, result, buf_size);
-                if (est != types::IoStatus::ok) {
-                    in.clear();
-                    close_client(fd);
-                    return;
+                for (int i = 0; i < send_queue.size(); ++i) {
+                    types::IoStatus est      = Encoder::encode(send_queue[i], results[i], buf_sizes[i]);
+                    if (est != types::IoStatus::ok) {
+                        in.clear();
+                        close_client(fd);
+                        return;
+                    }
                 }
 
-                // 写入写缓冲区
-                types::IoStatus wst = conn.send(reinterpret_cast<const char*>(result.data()), buf_size);
-                in.clear();
-                if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {
-                    close_client(fd);
-                    return;
+                for (int i = 0; i < results.size(); ++i) {
+                    // 写入写缓冲区
+                    types::IoStatus wst = conn.send(reinterpret_cast<const char*>(results[i].data()), buf_sizes[i]);
+                    in.clear();
+                    if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {
+                        close_client(fd);
+                        return;
+                    }
                 }
             }
 
