@@ -8,7 +8,7 @@
 
 namespace coordination {
     class Assembler {
-        //
+        
     };
 }
 

@@ -29,6 +29,10 @@ int main() {
     // 注册消息处理接口
     core.set_message_handler(controller::Controller::process);
 
+    // 注册装配器
+    // controller.set_ack_assembler(/* */);
+    // controller.set_res_assembler(/* */);
+
     try {
         core.run();
     } catch (const std::exception& e) {

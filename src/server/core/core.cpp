@@ -156,7 +156,7 @@ namespace core {
                 MessagePack     rmp;
                 types::IoStatus dst = codec::Decoder::decode(in, rmp);
                 // 按 opcode 执行操作
-                std::vector<MessagePack> send_queue;
+                std::vector<std::pair<MessagePack, int>> send_queue;
                 message_handler_(fd, rmp, send_queue);
 
                 // 编码
@@ -170,7 +170,7 @@ namespace core {
                 );
 
                 for (int i = 0; i < send_queue.size(); ++i) {
-                    types::IoStatus est = codec::Encoder::encode(send_queue[i], results[i], buf_sizes[i]);
+                    types::IoStatus est = codec::Encoder::encode(send_queue[i].first, results[i], buf_sizes[i]);
                     if (est != types::IoStatus::ok) {
                         in.clear();
                         close_client(fd);
@@ -179,7 +179,8 @@ namespace core {
                 }
 
                 for (int i = 0; i < results.size(); ++i) {
-                    // 写入写缓冲区
+                    // 写入写同一fd的写缓冲区
+                    // TODO: 当前程序仅能访问正在处理的连接，转发流量尚未实现
                     types::IoStatus wst = conn.send(reinterpret_cast<const char*>(results[i].data()), buf_sizes[i]);
                     in.clear();
                     if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {

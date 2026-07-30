@@ -27,7 +27,7 @@ namespace core {
         using message_handler = std::function<void(
             int                       fd,
             const MessagePack&        in,
-            std::vector<MessagePack>& out_queue
+            std::vector<std::pair<MessagePack, int>>& out_queue
         )>;
         using disconnect_handler = std::function<void(int fd)>;
 
