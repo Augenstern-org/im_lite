@@ -6,7 +6,7 @@
 #define COM_LITE_BINARY_CODE_H
 #include <cstdint>
 
-namespace core {
+namespace types {
     /* -------------------------------------------------------
      * 定义转换规则
      *
@@ -42,7 +42,7 @@ namespace core {
             case Opcode::ack:
             case Opcode::request:
             case Opcode::response: return true;
-            case Opcode::_init_:   return false;
+            case Opcode::_init_: return false;
         }
         return false; // 不在枚举列表中的线上字节
     }
@@ -50,11 +50,11 @@ namespace core {
     constexpr bool is_known_status(std::uint8_t raw) noexcept {
         switch (static_cast<Status>(raw)) {
             case Status::ok:
-            case Status::fail:   return true;
+            case Status::fail: return true;
             case Status::_init_: return false;
         }
         return false;
     }
-} // core
+} // types
 
 #endif //COM_LITE_BINARY_CODE_H

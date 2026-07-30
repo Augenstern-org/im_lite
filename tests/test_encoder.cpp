@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-#include "server/core/encoder.h"
+#include "common/encoder.h"
 
 namespace {
     // ---------------------------------------------------------------------
@@ -123,13 +123,13 @@ namespace {
     // E1
     // ---------------------------------------------------------------------
     void encode_golden_ascii() {
-        FrameHeader              fh(core::Opcode::request, core::Status::ok);
+        FrameHeader              fh(types::Opcode::request, types::Status::ok);
         MessagePack rmp(fh, msg_gv1());
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0x00});
         std::uint32_t          out_len = 0;
 
-        const types::IoStatus st = core::Encoder::encode(rmp, buf, out_len);
+        const types::IoStatus st = codec::Encoder::encode(rmp, buf, out_len);
         CHECK(st == types::IoStatus::ok);
         CHECK(out_len == 125);
 
@@ -159,13 +159,13 @@ namespace {
     void encode_golden_multibyte_len() {
         const std::string kJsonGv2 = gv2_json();
 
-        FrameHeader              fh(core::Opcode::response, core::Status::fail);
+        FrameHeader              fh(types::Opcode::response, types::Status::fail);
         MessagePack rmp(fh, msg_gv2());
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0x00});
         std::uint32_t          out_len = 0;
 
-        const types::IoStatus st = core::Encoder::encode(rmp, buf, out_len);
+        const types::IoStatus st = codec::Encoder::encode(rmp, buf, out_len);
         CHECK(st == types::IoStatus::ok);
         CHECK(out_len == 264);
 
@@ -183,13 +183,13 @@ namespace {
     // E3
     // ---------------------------------------------------------------------
     void encode_golden_utf8_cjk() {
-        FrameHeader              fh(core::Opcode::request, core::Status::ok);
+        FrameHeader              fh(types::Opcode::request, types::Status::ok);
         MessagePack rmp(fh, msg_gv3());
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0x00});
         std::uint32_t          out_len = 0;
 
-        const types::IoStatus st = core::Encoder::encode(rmp, buf, out_len);
+        const types::IoStatus st = codec::Encoder::encode(rmp, buf, out_len);
         CHECK(st == types::IoStatus::ok);
         CHECK(out_len == 126);
         CHECK(buf[5] == std::byte{0x78});   // body_len = 120
@@ -215,14 +215,14 @@ namespace {
     // E4 —— encode 会回写 rmp.fh_.body_len_，这是有意的副作用
     // ---------------------------------------------------------------------
     void encode_sets_body_len_side_effect() {
-        FrameHeader              fh(core::Opcode::request, core::Status::ok);
+        FrameHeader              fh(types::Opcode::request, types::Status::ok);
         MessagePack rmp(fh, msg_gv1());
         rmp.fh_.body_len_ = 999;
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0x00});
         std::uint32_t          out_len = 0;
 
-        CHECK(core::Encoder::encode(rmp, buf, out_len) == types::IoStatus::ok);
+        CHECK(codec::Encoder::encode(rmp, buf, out_len) == types::IoStatus::ok);
         CHECK(rmp.fh_.body_len_ == 119);
     }
 
@@ -230,13 +230,13 @@ namespace {
     // E5 —— 越界写检测：帧尾之后的每一个字节都必须保持哨兵值
     // ---------------------------------------------------------------------
     void encode_does_not_write_past_frame() {
-        FrameHeader              fh(core::Opcode::request, core::Status::ok);
+        FrameHeader              fh(types::Opcode::request, types::Status::ok);
         MessagePack rmp(fh, msg_gv1());
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0xAA});
         std::uint32_t          out_len = 0;
 
-        CHECK(core::Encoder::encode(rmp, buf, out_len) == types::IoStatus::ok);
+        CHECK(codec::Encoder::encode(rmp, buf, out_len) == types::IoStatus::ok);
         CHECK(out_len == 125);
         for (std::size_t i = 125; i < 1024; ++i) {
             CHECK(buf[i] == std::byte{0xAA});
@@ -256,14 +256,14 @@ namespace {
         Message m = msg_gv1();
         m.content_          = bad;
 
-        FrameHeader              fh(core::Opcode::request, core::Status::ok);
+        FrameHeader              fh(types::Opcode::request, types::Status::ok);
         MessagePack rmp(fh, m);
         rmp.fh_.body_len_ = 777;
 
         std::vector<std::byte> buf     = fresh_buf(1024, std::byte{0xAA});
         std::uint32_t          out_len = 12345;
 
-        const types::IoStatus st = core::Encoder::encode(rmp, buf, out_len);
+        const types::IoStatus st = codec::Encoder::encode(rmp, buf, out_len);
 
         // 能执行到这一行本身就是断言的一部分：进程没有被 terminate。
         CHECK(st == types::IoStatus::error);
@@ -276,13 +276,13 @@ namespace {
     // E7 —— encode 不做有效性校验：四个字符串全空也照常编码成功
     // ---------------------------------------------------------------------
     void encode_min_frame_empty_strings() {
-        FrameHeader              fh(core::Opcode::ack, core::Status::ok);
+        FrameHeader              fh(types::Opcode::ack, types::Status::ok);
         MessagePack rmp(fh, msg_gv4());
 
         std::vector<std::byte> buf = fresh_buf(1024, std::byte{0x00});
         std::uint32_t          out_len = 0;
 
-        const types::IoStatus st = core::Encoder::encode(rmp, buf, out_len);
+        const types::IoStatus st = codec::Encoder::encode(rmp, buf, out_len);
         CHECK(st == types::IoStatus::ok);   // 不是 error：校验由上层负责
         CHECK(out_len == 98);
         CHECK(buf[0] == std::byte{0x00});
@@ -295,7 +295,7 @@ namespace {
     // E8 —— 编译期：encode 必须是 noexcept
     // ---------------------------------------------------------------------
     void encode_is_noexcept() {
-        static_assert(noexcept(core::Encoder::encode(std::declval<MessagePack&>(),
+        static_assert(noexcept(codec::Encoder::encode(std::declval<MessagePack&>(),
                                                      std::declval<std::vector<std::byte>&>(),
                                                      std::declval<std::uint32_t&>())),
                       "Encoder::encode must be noexcept");

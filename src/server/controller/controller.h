@@ -5,7 +5,7 @@
 #ifndef COM_LITE_CONTROLLER_H
 #define COM_LITE_CONTROLLER_H
 
-#include <iostream>
+#include <functional>
 #include <vector>
 
 #include "server/coordination/assembler.h"
@@ -22,25 +22,19 @@ namespace controller {
             // 直接返回应答
         }
 
-        coordination::Assembler ack_assembler_;
-        coordination::Assembler res_assembler_;
+        using AckAssembler = std::function<types::IoStatus(/*api*/)>;
+        using ResAssembler = std::function<types::IoStatus(/*api*/)>;
+
+        static AckAssembler ack_assembler_;
+        static ResAssembler res_assembler_;
 
     public:
         Controller() = default;
 
-        static void process(int fd, const MessagePack& rmp, std::vector<MessagePack>& out_queue) {
-            std::cout << "uid: " << rmp.msg_.from_uid_ << "\n"
-                    << "content: " << rmp.msg_.content_ << std::endl;
+        static void process(int fd, const MessagePack& rmp, std::vector<MessagePack>& out_queue);
 
-            // Opcode 判断消息类型
-            // req -> 转发req + 返回res
-            // ack -> 应答ack
-            // 只有服务端才会返回res
-
-            // 所有消息压入消息队列，供 encoder 消费
-            // 目前仍是直接回显
-            out_queue.push_back(rmp);
-        }
+        static void set_ack_assembler(AckAssembler a) { ack_assembler_ = std::move(a); }
+        static void set_res_assembler(ResAssembler r) { res_assembler_ = std::move(r); }
     };
 } // controller
 

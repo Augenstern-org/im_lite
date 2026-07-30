@@ -15,7 +15,7 @@
 #include "common/io_status.h"
 #include "common/message.h"
 #include "common/message_pack.h"
-#include "server/core/encoder.h"
+#include "common/encoder.h"
 
 int main() {
     int client_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -46,8 +46,8 @@ int main() {
     r.content_       = "Cirno";
 
     FrameHeader f{};
-    f.opcode_ = core::Opcode::request;
-    f.status_ = core::Status::ok;
+    f.opcode_ = types::Opcode::request;
+    f.status_ = types::Status::ok;
 
     // Encoder 直接 memcpy 进 out_buf，不做越界检查
     // 缓冲按最大帧长分配
@@ -57,7 +57,7 @@ int main() {
     MessagePack r_msg_pack(f, r);
 
     uint32_t out_len = 0;
-    if (core::Encoder::encode(r_msg_pack, bytes, out_len) != types::IoStatus::ok) {
+    if (codec::Encoder::encode(r_msg_pack, bytes, out_len) != types::IoStatus::ok) {
         std::cerr << "Failed to encode message\n";
         close(client_fd);
         return -1;

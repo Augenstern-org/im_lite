@@ -10,7 +10,7 @@
 #include <string>
 #include "json.hpp"
 
-static constexpr std::size_t max_message_body_length = 65530;
+inline constexpr std::size_t max_message_body_length = 65530;
 
 namespace types {
     enum class ChatTypes : std::uint8_t {

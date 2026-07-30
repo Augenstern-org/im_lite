@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # 其余目标一律通过 target_link_libraries 继承，不再自行声明 include 路径。
 #
 #   src/     —— 项目自身头文件。包含时写成从 src/ 起的完整路径，
-#                例如 "server/core/encoder.h"、"common/message.h"。
+#                例如 "common/encoder.h"、"server/core/core.h"。
 #                同一个头文件在任何位置都只有这一种写法，不使用相对路径。
 #   include/ —— 第三方单头文件库（json.hpp）。
 add_library(com_lite_base INTERFACE)

@@ -4,6 +4,7 @@
 
 #ifndef COM_LITE_ASSEMBLER_H
 #define COM_LITE_ASSEMBLER_H
+#include "common/io_status.h"
 
 namespace coordination {
     class Assembler {

@@ -5,11 +5,12 @@
 #ifndef COM_LITE_DECODER_H
 #define COM_LITE_DECODER_H
 
-#include "server/core/binary_code.h"
+#include "common/binary_code.h"
 #include "common/message_pack.h"
 #include "json.hpp"
 #include "common/io_status.h"
 #include "common/message.h"
+#include "common/frame_header.h"
 #include <vector>
 #include <netinet/in.h>
 #include <cstddef>
@@ -18,7 +19,7 @@
 #include <string>
 #include <utility>
 
-namespace core {
+namespace codec {
     class Decoder {
     public:
         // 分帧逻辑应当在 decoder 之外就完成了
@@ -32,7 +33,7 @@ namespace core {
                 // 枚举值域校验先于 static_cast
                 const auto raw_opcode = static_cast<std::uint8_t>(in_buf[0]);
                 const auto raw_status = static_cast<std::uint8_t>(in_buf[1]);
-                if (!is_known_opcode(raw_opcode) || !is_known_status(raw_status)) {
+                if (!types::is_known_opcode(raw_opcode) || !types::is_known_status(raw_status)) {
                     return types::IoStatus::error;
                 }
 
@@ -40,6 +41,7 @@ namespace core {
                 std::memcpy(&body_len, in_buf.data() + 2, sizeof(body_len));
                 body_len = ntohl(body_len);
 
+                if (body_len > max_message_body_length) return types::IoStatus::frame_too_long;
                 if (in_buf.size() - FrameHeader::wire_size < body_len) return types::IoStatus::error;
 
                 const std::string s(
@@ -55,8 +57,8 @@ namespace core {
                 if (!msg.is_valid()) return types::IoStatus::error;
 
                 FrameHeader fh;
-                fh.opcode_   = static_cast<Opcode>(raw_opcode);
-                fh.status_   = static_cast<Status>(raw_status);
+                fh.opcode_   = static_cast<types::Opcode>(raw_opcode);
+                fh.status_   = static_cast<types::Status>(raw_status);
                 fh.body_len_ = body_len;
 
                 // 执行最终操作（不能再抛异常）
@@ -68,6 +70,6 @@ namespace core {
             }
         }
     };
-}
+} // codec
 
 #endif //COM_LITE_DECODER_H

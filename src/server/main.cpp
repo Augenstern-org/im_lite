@@ -3,6 +3,7 @@
 //
 
 #include <iostream>
+#include <stdexcept>
 
 #include "server/controller/controller.h"
 #include "server/core/core.h"
@@ -28,7 +29,10 @@ int main() {
     // 注册消息处理接口
     core.set_message_handler(controller::Controller::process);
 
-    core.run();
-
+    try {
+        core.run();
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << std::endl;
+    }
     return 0;
 }

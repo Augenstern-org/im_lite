@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-#include "server/core/decoder.h"
+#include "common/decoder.h"
 
 namespace {
     // ---------------------------------------------------------------------
@@ -61,8 +61,8 @@ namespace {
 
     // GV-1 解码后应得到的全部字段。
     void check_gv1_fields(const MessagePack& rmp) {
-        CHECK(rmp.fh_.opcode_ == core::Opcode::request);
-        CHECK(rmp.fh_.status_ == core::Status::ok);
+        CHECK(rmp.fh_.opcode_ == types::Opcode::request);
+        CHECK(rmp.fh_.status_ == types::Status::ok);
         CHECK(rmp.fh_.body_len_ == 119);
         CHECK(rmp.msg_.chat_type_ == types::ChatTypes::single);
         CHECK(rmp.msg_.msg_type_ == types::MessageTypes::text);
@@ -80,7 +80,7 @@ namespace {
         CHECK(in.size() == 125);
 
         MessagePack rmp;
-        CHECK(core::Decoder::decode(in, rmp) == types::IoStatus::ok);
+        CHECK(codec::Decoder::decode(in, rmp) == types::IoStatus::ok);
         check_gv1_fields(rmp);
     }
 
@@ -93,9 +93,9 @@ namespace {
         CHECK(in.size() == 264);
 
         MessagePack rmp;
-        CHECK(core::Decoder::decode(in, rmp) == types::IoStatus::ok);
-        CHECK(rmp.fh_.opcode_ == core::Opcode::response);
-        CHECK(rmp.fh_.status_ == core::Status::fail);
+        CHECK(codec::Decoder::decode(in, rmp) == types::IoStatus::ok);
+        CHECK(rmp.fh_.opcode_ == types::Opcode::response);
+        CHECK(rmp.fh_.status_ == types::Status::fail);
         CHECK(rmp.fh_.body_len_ == 258);
         CHECK(rmp.msg_.content_.size() == 150);
         CHECK(rmp.msg_.from_uid_ == "alice");
@@ -109,7 +109,7 @@ namespace {
         CHECK(in.size() == 126);
 
         MessagePack rmp;
-        CHECK(core::Decoder::decode(in, rmp) == types::IoStatus::ok);
+        CHECK(codec::Decoder::decode(in, rmp) == types::IoStatus::ok);
         CHECK(rmp.fh_.body_len_ == 120);
         CHECK(rmp.msg_.from_uid_ == "惠惠");
         CHECK(rmp.msg_.to_uid_ == "大王");
@@ -128,7 +128,7 @@ namespace {
         CHECK(in.size() == 1024);
 
         MessagePack rmp;
-        CHECK(core::Decoder::decode(in, rmp) == types::IoStatus::ok);
+        CHECK(codec::Decoder::decode(in, rmp) == types::IoStatus::ok);
         check_gv1_fields(rmp);
     }
 
@@ -140,7 +140,7 @@ namespace {
         CHECK(in.size() == 6 + 119);
 
         MessagePack rmp;
-        CHECK(core::Decoder::decode(in, rmp) == types::IoStatus::ok);
+        CHECK(codec::Decoder::decode(in, rmp) == types::IoStatus::ok);
         check_gv1_fields(rmp);
     }
 
@@ -151,11 +151,11 @@ namespace {
         MessagePack rmp;
 
         const std::vector<std::byte> empty;
-        CHECK(core::Decoder::decode(empty, rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(empty, rmp) == types::IoStatus::error);
 
         std::vector<std::byte> five;
         five.resize(5, std::byte{0x00});
-        CHECK(core::Decoder::decode(five, rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(five, rmp) == types::IoStatus::error);
     }
 
     // ---------------------------------------------------------------------
@@ -166,18 +166,19 @@ namespace {
         CHECK(in.size() == 124);
 
         MessagePack rmp;
-        CHECK(core::Decoder::decode(in, rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(in, rmp) == types::IoStatus::error);
     }
 
     // ---------------------------------------------------------------------
-    // D8 —— 对端声明 4 GiB：必须在界限检查处返回，绝不用该长度驱动分配
+    // D8 —— 对端声明 4 GiB：必须在长度上限检查处以 frame_too_long 返回，绝不用该长度驱动分配。
+    //        该检查先于"载荷是否够长"的 error 分支，故此处不是 error。
     // ---------------------------------------------------------------------
     void decode_rejects_absurd_declared_len() {
         const std::vector<std::byte> in = make_frame(0x01, 0x00, 0xFFFFFFFFu, kJsonGv1);
         CHECK(in.size() == 125);
 
         MessagePack rmp;
-        CHECK(core::Decoder::decode(in, rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(in, rmp) == types::IoStatus::frame_too_long);
     }
 
     // ---------------------------------------------------------------------
@@ -185,22 +186,22 @@ namespace {
     // ---------------------------------------------------------------------
     void decode_rejects_unknown_opcode() {
         MessagePack rmp;
-        CHECK(core::Decoder::decode(make_frame(0x07, 0x00, kJsonGv1), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x07, 0x00, kJsonGv1), rmp) == types::IoStatus::error);
     }
 
     void decode_rejects_init_opcode() {
         MessagePack rmp;
-        CHECK(core::Decoder::decode(make_frame(0xFF, 0x00, kJsonGv1), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0xFF, 0x00, kJsonGv1), rmp) == types::IoStatus::error);
     }
 
     void decode_rejects_unknown_status() {
         MessagePack rmp;
-        CHECK(core::Decoder::decode(make_frame(0x01, 0x05, kJsonGv1), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x01, 0x05, kJsonGv1), rmp) == types::IoStatus::error);
     }
 
     void decode_rejects_init_status() {
         MessagePack rmp;
-        CHECK(core::Decoder::decode(make_frame(0x01, 0xFF, kJsonGv1), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x01, 0xFF, kJsonGv1), rmp) == types::IoStatus::error);
     }
 
     // ---------------------------------------------------------------------
@@ -213,7 +214,7 @@ namespace {
         for (const std::uint8_t op : ops) {
             for (const std::uint8_t st : sts) {
                 MessagePack rmp;
-                CHECK(core::Decoder::decode(make_frame(op, st, kJsonGv1), rmp) == types::IoStatus::ok);
+                CHECK(codec::Decoder::decode(make_frame(op, st, kJsonGv1), rmp) == types::IoStatus::ok);
                 CHECK(static_cast<std::uint8_t>(rmp.fh_.opcode_) == op);
                 CHECK(static_cast<std::uint8_t>(rmp.fh_.status_) == st);
             }
@@ -225,14 +226,14 @@ namespace {
     // ---------------------------------------------------------------------
     void decode_rejects_malformed_json() {
         MessagePack rmp;
-        CHECK(core::Decoder::decode(make_frame(0x01, 0x00, "{not json"), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x01, 0x00, "{not json"), rmp) == types::IoStatus::error);
     }
 
     // 缺陷 A 的原始触发点：from_json 里的 at() 会抛 out_of_range.403。
     // 修复前这个异常逸出 noexcept 边界，直接 terminate 掉进程。
     void decode_rejects_missing_key() {
         MessagePack rmp;
-        CHECK(core::Decoder::decode(make_frame(0x01, 0x00, "{}"), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x01, 0x00, "{}"), rmp) == types::IoStatus::error);
         // 能执行到这里本身就是断言：进程没有被 terminate。
     }
 
@@ -243,18 +244,18 @@ namespace {
                 R"({"chat_type_":0,"client_msg_id_":"hash","content_":"hi","from_uid_":123,"msg_type_":0,"to_uid_":"Evil"})";
 
         MessagePack rmp;
-        CHECK(core::Decoder::decode(make_frame(0x01, 0x00, body), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x01, 0x00, body), rmp) == types::IoStatus::error);
     }
 
     // "[1,2,3]" 能解析成功且不是 discarded，但不是对象 —— 必须由 is_object() 拦下。
     void decode_rejects_non_object_body() {
         MessagePack rmp;
-        CHECK(core::Decoder::decode(make_frame(0x01, 0x00, "[1,2,3]"), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x01, 0x00, "[1,2,3]"), rmp) == types::IoStatus::error);
     }
 
     void decode_rejects_null_body() {
         MessagePack rmp;
-        CHECK(core::Decoder::decode(make_frame(0x01, 0x00, "null"), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x01, 0x00, "null"), rmp) == types::IoStatus::error);
     }
 
     // ---------------------------------------------------------------------
@@ -268,7 +269,7 @@ namespace {
         // 解码器拒绝，还是放行给上层业务判断），但当前行为已确认为预期行为，
         // 本用例锁定它，改动策略时此处必须同步修改。
         MessagePack rmp;
-        CHECK(core::Decoder::decode(make_frame(0x01, 0x00, kJsonGv4), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x01, 0x00, kJsonGv4), rmp) == types::IoStatus::error);
     }
 
     // ---------------------------------------------------------------------
@@ -276,8 +277,8 @@ namespace {
     // ---------------------------------------------------------------------
     void decode_leaves_out_param_untouched_on_error() {
         MessagePack rmp;
-        rmp.fh_.opcode_         = core::Opcode::ack;
-        rmp.fh_.status_         = core::Status::fail;
+        rmp.fh_.opcode_         = types::Opcode::ack;
+        rmp.fh_.status_         = types::Status::fail;
         rmp.fh_.body_len_       = 4242;
         rmp.msg_.chat_type_     = types::ChatTypes::group;
         rmp.msg_.msg_type_      = types::MessageTypes::pic;
@@ -287,8 +288,8 @@ namespace {
         rmp.msg_.content_       = "SENTINEL_CONTENT";
 
         const auto check_sentinels = [&rmp]() {
-            CHECK(rmp.fh_.opcode_ == core::Opcode::ack);
-            CHECK(rmp.fh_.status_ == core::Status::fail);
+            CHECK(rmp.fh_.opcode_ == types::Opcode::ack);
+            CHECK(rmp.fh_.status_ == types::Status::fail);
             CHECK(rmp.fh_.body_len_ == 4242);
             CHECK(rmp.msg_.chat_type_ == types::ChatTypes::group);
             CHECK(rmp.msg_.msg_type_ == types::MessageTypes::pic);
@@ -299,16 +300,16 @@ namespace {
         };
 
         // 缺键（JSON 反序列化中途失败）
-        CHECK(core::Decoder::decode(make_frame(0x01, 0x00, "{}"), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x01, 0x00, "{}"), rmp) == types::IoStatus::error);
         check_sentinels();
 
         // 未知 opcode（帧头阶段失败）
-        CHECK(core::Decoder::decode(make_frame(0x07, 0x00, kJsonGv1), rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(make_frame(0x07, 0x00, kJsonGv1), rmp) == types::IoStatus::error);
         check_sentinels();
 
         // 载荷截断（长度界限阶段失败）
         CHECK(
-            core::Decoder::decode(make_frame(0x01, 0x00, 119u, kJsonGv1.substr(0, 118)), rmp)
+            codec::Decoder::decode(make_frame(0x01, 0x00, 119u, kJsonGv1.substr(0, 118)), rmp)
             == types::IoStatus::error
         );
         check_sentinels();
@@ -319,7 +320,7 @@ namespace {
     // ---------------------------------------------------------------------
     void decode_is_noexcept() {
         static_assert(
-            noexcept(core::Decoder::decode(
+            noexcept(codec::Decoder::decode(
                 std::declval<const std::vector<std::byte>&>(),
                 std::declval<MessagePack&>()
             )),

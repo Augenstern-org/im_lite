@@ -18,8 +18,8 @@
 #include <string>
 #include <vector>
 
-#include "server/core/decoder.h"
-#include "server/core/encoder.h"
+#include "common/decoder.h"
+#include "common/encoder.h"
 
 namespace {
     Message msg_gv1() {
@@ -74,24 +74,24 @@ namespace {
     // ---------------------------------------------------------------------
     void roundtrip_ascii() {
         const Message  original = msg_gv1();
-        FrameHeader              fh(core::Opcode::request, core::Status::ok);
+        FrameHeader              fh(types::Opcode::request, types::Status::ok);
         MessagePack src(fh, original);
 
         std::vector<std::byte> buf;
         buf.resize(1024, std::byte{0x00});
         std::uint32_t out_len = 0;
 
-        CHECK(core::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
+        CHECK(codec::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
         CHECK(out_len == 125);
         CHECK(buf.size() == 1024);   // 不裁剪
 
         MessagePack dst;
-        CHECK(core::Decoder::decode(buf, dst) == types::IoStatus::ok);
+        CHECK(codec::Decoder::decode(buf, dst) == types::IoStatus::ok);
 
         check_fields_equal(original, dst.msg_);
         CHECK(dst.fh_.body_len_ == 119);
-        CHECK(dst.fh_.opcode_ == core::Opcode::request);
-        CHECK(dst.fh_.status_ == core::Status::ok);
+        CHECK(dst.fh_.opcode_ == types::Opcode::request);
+        CHECK(dst.fh_.status_ == types::Status::ok);
     }
 
     // ---------------------------------------------------------------------
@@ -99,24 +99,24 @@ namespace {
     // ---------------------------------------------------------------------
     void roundtrip_multibyte_len() {
         const Message  original = msg_gv2();
-        FrameHeader              fh(core::Opcode::response, core::Status::fail);
+        FrameHeader              fh(types::Opcode::response, types::Status::fail);
         MessagePack src(fh, original);
 
         std::vector<std::byte> buf;
         buf.resize(1024, std::byte{0x00});
         std::uint32_t out_len = 0;
 
-        CHECK(core::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
+        CHECK(codec::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
         CHECK(out_len == 264);
 
         MessagePack dst;
-        CHECK(core::Decoder::decode(buf, dst) == types::IoStatus::ok);
+        CHECK(codec::Decoder::decode(buf, dst) == types::IoStatus::ok);
 
         check_fields_equal(original, dst.msg_);
         CHECK(dst.fh_.body_len_ == 258);
         CHECK(dst.msg_.content_.size() == 150);
-        CHECK(dst.fh_.opcode_ == core::Opcode::response);
-        CHECK(dst.fh_.status_ == core::Status::fail);
+        CHECK(dst.fh_.opcode_ == types::Opcode::response);
+        CHECK(dst.fh_.status_ == types::Status::fail);
     }
 
     // ---------------------------------------------------------------------
@@ -124,18 +124,18 @@ namespace {
     // ---------------------------------------------------------------------
     void roundtrip_cjk() {
         const Message  original = msg_gv3();
-        FrameHeader              fh(core::Opcode::request, core::Status::ok);
+        FrameHeader              fh(types::Opcode::request, types::Status::ok);
         MessagePack src(fh, original);
 
         std::vector<std::byte> buf;
         buf.resize(1024, std::byte{0x00});
         std::uint32_t out_len = 0;
 
-        CHECK(core::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
+        CHECK(codec::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
         CHECK(out_len == 126);
 
         MessagePack dst;
-        CHECK(core::Decoder::decode(buf, dst) == types::IoStatus::ok);
+        CHECK(codec::Decoder::decode(buf, dst) == types::IoStatus::ok);
 
         check_fields_equal(original, dst.msg_);
         CHECK(dst.msg_.from_uid_ == "惠惠");
@@ -150,12 +150,12 @@ namespace {
     // ---------------------------------------------------------------------
     void roundtrip_no_field_transposition() {
         struct Case {
-            core::Opcode op;
-            core::Status st;
+            types::Opcode op;
+            types::Status st;
         };
         const Case cases[2] = {
-            {core::Opcode::ack, core::Status::fail},        // 0x00 / 0x01
-            {core::Opcode::response, core::Status::ok}      // 0x02 / 0x00
+            {types::Opcode::ack, types::Status::fail},        // 0x00 / 0x01
+            {types::Opcode::response, types::Status::ok}      // 0x02 / 0x00
         };
 
         for (const Case& c : cases) {
@@ -166,10 +166,10 @@ namespace {
             buf.resize(1024, std::byte{0x00});
             std::uint32_t out_len = 0;
 
-            CHECK(core::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
+            CHECK(codec::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
 
             MessagePack dst;
-            CHECK(core::Decoder::decode(buf, dst) == types::IoStatus::ok);
+            CHECK(codec::Decoder::decode(buf, dst) == types::IoStatus::ok);
             CHECK(dst.fh_.opcode_ == c.op);
             CHECK(dst.fh_.status_ == c.st);
         }
@@ -180,19 +180,19 @@ namespace {
     // ---------------------------------------------------------------------
     void roundtrip_trimmed_buffer() {
         const Message  original = msg_gv1();
-        FrameHeader              fh(core::Opcode::request, core::Status::ok);
+        FrameHeader              fh(types::Opcode::request, types::Status::ok);
         MessagePack src(fh, original);
 
         std::vector<std::byte> buf;
         buf.resize(1024, std::byte{0x00});
         std::uint32_t out_len = 0;
 
-        CHECK(core::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
+        CHECK(codec::Encoder::encode(src, buf, out_len) == types::IoStatus::ok);
         buf.resize(out_len);
         CHECK(buf.size() == 125);
 
         MessagePack dst;
-        CHECK(core::Decoder::decode(buf, dst) == types::IoStatus::ok);
+        CHECK(codec::Decoder::decode(buf, dst) == types::IoStatus::ok);
 
         check_fields_equal(original, dst.msg_);
         CHECK(dst.fh_.body_len_ == 119);

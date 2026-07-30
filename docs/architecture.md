@@ -20,9 +20,12 @@ src/
     frame_header.h   FrameHeader（帧头 + 编译期 wire_size）
     message_pack.h   MessagePack（FrameHeader + Message）
     io_status.h      IoStatus 枚举及 toString
+    binary_code.h    Opcode / Status 及其线上字节值域校验
+    encoder.h        Encoder（MessagePack → 线上字节）
+    decoder.h        Decoder（线上字节 → MessagePack）
   server/
     main.cpp         装配 Core / Controller，注册回调，run()
-    core/            binary_code.h（Opcode / Status）、connections.*、core.*、encoder.h、decoder.h
+    core/            connections.*（连接对象与读写缓冲）、core.*（epoll 事件循环）
     controller/      controller.h（按 opcode 派发，当前仍为回显）
     coordination/    user.h、users_group.h、assembler.h（后两者尚为骨架）
   client/
@@ -31,7 +34,7 @@ include/       json.hpp（第三方单头文件库）
 tests/         ctest 目标，见 §6
 ```
 
-头文件搜索根全项目只有两个——`src/` 与 `include/`，由 CMake 的 `com_lite_base` INTERFACE 目标统一提供，其余目标一律通过 `target_link_libraries` 继承。因此**同一个头文件在任何位置只有一种写法**：从 `src/` 起的完整路径，如 `"server/core/encoder.h"`、`"common/message.h"`，不使用相对路径。
+头文件搜索根全项目只有两个——`src/` 与 `include/`，由 CMake 的 `com_lite_base` INTERFACE 目标统一提供，其余目标一律通过 `target_link_libraries` 继承。因此**同一个头文件在任何位置只有一种写法**：从 `src/` 起的完整路径，如 `"common/encoder.h"`、`"server/core/core.h"`，不使用相对路径。
 
 `src/common/io_status.h` 从其它项目复制而来，部分枚举值的语义在本项目中被重新赋义（见 §2.4）。
 
@@ -49,7 +52,7 @@ flowchart TD
         U[用户组 UserGroup<br/>uid ↔ fd 表 · 生命周期持有者]
     end
     subgraph L3[核心层 Core · 机制]
-        K[核心<br/>编解码 · 读写 socket · epoll]
+        K[核心<br/>编解码 · 读写 socket · epoll<br/>编解码由 src/common/ 的 codec:: 提供，双方共用]
     end
     C --> O
     O --- U
@@ -74,13 +77,13 @@ flowchart TD
 
 ### 2.3 核心层（Core）
 
-- **职责**：不关心任何业务逻辑。只负责：消息的**编码 / 解码**、按上层给定的 fd **读写数据**、驱动 epoll 事件循环。当前 `main.cpp` 中的 socket 装配、epoll 循环、accept、读写系统调用都归入这一层。
+- **职责**：不关心任何业务逻辑。只负责：消息的**编码 / 解码**、按上层给定的 fd **读写数据**、驱动 epoll 事件循环。当前 `main.cpp` 中的 socket 装配、epoll 循环、accept、读写系统调用都归入这一层。其中编解码只是**逻辑分层**上属于本层，实现（`codec::Encoder` / `codec::Decoder`）位于 `src/common/`，由通信双方共用（见 §3.3）。
 - **数据来源无感知**：核心层读到的数据来自哪个用户、要发往哪个用户，均由协调层决定并驱动；核心层只面对一个具体的 fd，不追问"这个 fd 是谁"。
 - **`IoStatus` 的归属**：核心层的读写操作以 `IoStatus` 报告结果（`WouldBlock` / `Closed` / `FrameTooLong` 等），交由上层据此决策。
 
 ### 2.4 分帧协议（帧格式）
 
-为解决 TCP 字节流的粘包 / 拆包问题，采用**固定头（6 字节）+ 可变体**的帧结构。编解码由核心层完成。
+为解决 TCP 字节流的粘包 / 拆包问题，采用**固定头（6 字节）+ 可变体**的帧结构。编解码在逻辑分层上仍归核心层，实现位于 `src/common/` 的 `codec::`，通信双方共用。
 
 **帧头布局（固定 6 字节）**
 
@@ -95,7 +98,7 @@ flowchart TD
 - **opcode 的用途**：核心层无需反序列化包体即可知道帧用途，可据此做早期分派（例如心跳无需走完整反序列化）；控制层按此字段判定请求类别。
 - **可变体（Body）**：`Message` 序列化后的字节，采用 **JSON** 序列化（demo 性质，优先可读与实现简单）。
 
-**收帧流程（核心层）**：读满 6 字节帧头 → 取 opcode / status（校验为已知枚举）、`ntohl` 解出 `body_len` → 校验 `body_len` 不超过上限常量 `MAX_BODY_LEN`（取值待定；超过则以 `IoStatus::FrameTooLong` 拒绝 / 关闭连接）→ 按 `body_len` 读满包体 → 反序列化为 `Message` 上交。长度被显式声明，切分不依赖分隔符，能准确处理连续到达（粘包）或被拆分（拆包）的字节流。
+**收帧流程（核心层）**：读满 6 字节帧头 → 取 opcode / status（校验为已知枚举）、`ntohl` 解出 `body_len` → 校验 `body_len` 不超过上限常量 `max_message_body_length`（65530，见 `common/message.h`）；超过则以 `IoStatus::FrameTooLong` 拒绝，连接级处置（丢弃后续字节 / 关闭连接）仍待分帧状态机落地 → 按 `body_len` 读满包体 → 反序列化为 `Message` 上交。长度被显式声明，切分不依赖分隔符，能准确处理连续到达（粘包）或被拆分（拆包）的字节流。
 
 **实现注意**：不要把 `Header*` 直接 `reinterpret_cast` 到收到的字节缓冲上（字节序、对齐、strict-aliasing、结构体 padding 都有坑，`sizeof` 也不保证跨平台为 6）。应逐字段解析：按偏移取 opcode / status，`body_len` 用 `memcpy` 取 4 字节再 `ntohl`。
 
@@ -144,9 +147,22 @@ epoll 在核心层，数据到达时由核心层先拿到并解码，再向上�
 
 `Message` 是三层之间传递的数据契约：核心层编解码要认识它，协调层执行流程也要认识它。因此它不归任何单独一层所有，放在 `src/common/`。
 
-同理，`FrameHeader` 与 `MessagePack` 也已从 `server/core/` 迁入 `src/common/`——调试客户端要构帧发包，这两个类型不再是服务端私有。
+同理，`FrameHeader`、`MessagePack`、`binary_code.h`（`Opcode` / `Status`）以及 `encoder.h` / `decoder.h` 也已从 `server/core/` 迁入 `src/common/`——编解码是通信双方共用的能力，调试客户端要构帧发包，这些类型与能力都不再是服务端私有。
 
-> 遗留：`encoder.h` / `decoder.h` 仍在 `server/core/` 下，客户端只能写 `#include "server/core/encoder.h"`；`common/frame_header.h` 又反过来依赖 `server/core/binary_code.h`（`Opcode` / `Status` 尚在 `core::` 命名空间）。编解码是通信双方共用的能力，"什么算 common"这条线目前是按遇到问题的先后划的，不是按职责划的，需要一次统一定夺。
+> **已定夺**："什么算 common"按**职责**划，不按遇到问题的先后划——**通信双方都要认识的契约与能力归 `src/common/`**，只有服务端才需要的机制归 `src/server/`。据此 `binary_code.h` / `encoder.h` / `decoder.h` 一并迁入 `src/common/`，`common/` 不再反向依赖 `server/`；`server/core/` 收敛为 `connections.*` 与 `core.*`。命名空间随目录一同收敛：
+>
+> | 命名空间 | 内容 | 位置 |
+> |---|---|---|
+> | 全局 | `Message`、`FrameHeader`、`MessagePack`、`max_message_body_length` | `src/common/` |
+> | `types::` | `IoStatus`、`ChatTypes`、`MessageTypes`、`Opcode`、`Status`、`is_known_opcode` / `is_known_status` | `src/common/` |
+> | `codec::` | `Encoder`、`Decoder` | `src/common/` |
+> | `core::` | `Core`、`Connections` | `src/server/core/` |
+> | `controller::` | `Controller` | `src/server/controller/` |
+> | `coordination::` | `User`、`UsersGroup`、`Assembler` | `src/server/coordination/` |
+>
+> 契约类型留在全局命名空间是有意的：它们是三层加客户端的共同词汇，不属于任何一层。
+>
+> **命名约定**：不要用 `core` / `codec` / `types` / `controller` / `coordination` 命名**类型**（class / struct / enum）。限定名查找（`[basic.lookup.qual]`）在 `::` 之前只考虑命名空间、类型和模板，所以同名的**类型**会遮蔽命名空间，使其后的 `core::X` 编译失败；同名的**变量 / 形参 / 数据成员则被忽略**，不影响编译。`src/server/main.cpp:14` 的 `core::Core core(7891, 2);` 与 `:19` 的 `controller::Controller controller;` 都属后者——`:29` 之后仍能正常写 `controller::Controller::process`，合法，只是可读性差，新代码不必模仿。
 
 ### 3.4 连接生命周期与 fd 复用
 
@@ -177,7 +193,7 @@ fd 会被操作系统回收复用，这是即时通信服务端最典型的串�
 
 1. ✅ **抽出 socket + epoll 装配**：把 `main.cpp` 中的监听 socket 创建与 epoll 循环搬入核心层。`main()` 收敛为"构建核心层 → 运行"。这是最机械、最安全的一刀。
 2. ✅ **每条客户端连接对象化**：以连接对象（持有 fd 与读 / 写缓冲）替代原型中裸 `buf` 与"发完不管"的 `send`。读写返回接入 `IoStatus`。此步同时修正原型中"写返回 `EAGAIN` 时静默丢数据"的问题。
-3. 🚧 **插入编解码（帧切分）**：在核心层读缓冲的字节与 `Message` 之间加入分帧，采用固定头 + 可变体的帧结构（见 §2.4）。编解码器本身已完成并有黄金字节测试兜底；**分帧状态机尚未实现**——`Decoder::decode()` 目前假定调用方已切出完整帧，粘包 / 拆包与超长帧防护（`IoStatus::FrameTooLong`）都还没有落点。
+3. 🚧 **插入编解码（帧切分）**：在核心层读缓冲的字节与 `Message` 之间加入分帧，采用固定头 + 可变体的帧结构（见 §2.4）。编解码器本身已完成并有黄金字节测试兜底；**分帧状态机尚未实现**——`Decoder::decode()` 目前假定调用方已切出完整帧，粘包 / 拆包还没有落点；超长帧的长度校验已在编解码两侧落地（见 §7），仍缺的是"头部声明超长时如何丢弃后续字节并关闭连接"这一连接级处置。
 4. 🚧 **落业务与用户组**：协调层（含用户组）承接完整流程，控制层承接入口校验与派发。已完成的是**接线**：`Core` 通过 `set_message_handler()` 注册回调，签名为
 
    ```cpp
@@ -205,9 +221,8 @@ fd 会被操作系统回收复用，这是即时通信服务端最典型的串�
 ## 7. 待定项
 
 - **登录 / 握手协议**（未决）：uid ↔ fd 绑定发生在登录时，登录指令的具体形态（认证方式、`msg_type_` 取值）尚未定义。
-- **超长帧防护**（部分落地）：上限常量已取值——`common/message.h` 中 `max_message_body_length = 65530`，编码侧按它分配缓冲。但**解码侧尚未据此拒绝**：`Decoder::decode()` 只校验"缓冲内剩余字节够不够 `body_len`"，没有校验 `body_len` 是否超过上限，`IoStatus::FrameTooLong` 至今没有产出点。该校验需与分帧状态机（§5 步 3）一并落地。
+- **超长帧防护**（长度校验已落地，分帧仍缺）：上限常量 `max_message_body_length = 65530`（`common/message.h`），语义为**帧体字节数，不含 6 字节头**（与 §2.4 的 `body_len` 同义）。编解码两侧现已各有一道校验并产出 `IoStatus::FrameTooLong`：`Decoder::decode()` 在 `ntohl` 解出 `body_len` 之后、按该长度取包体之前拒绝；`Encoder::encode()` 在序列化完成之后、**向 `out_buf` 写入之前**拒绝——这个次序是硬约束，写在 `memcpy` 之后等于越界已经发生，且会破坏 `encode()` 自述的"返回错误时 `out_buf` 一字节未动"后置条件。仍未落地的是**分帧状态机**（§5 步 3）：粘包 / 拆包的切分，以及"头部声明超长时如何丢弃后续字节并关闭连接"的连接级处置。
 - **`ResponseMsg::server_seq_` 的去向**（未决）：随消息模型塌缩去掉，尚未确定以何种形式回归（见 §2.5）。
-- **`common` 与 `server` 的边界**（未决）：见 §3.3 遗留说明。
 - **离线消息暂存**（暂不实现）：目标 uid 当前无在线 fd 时的处理暂不落地，仅在协调层预留接口占位；未来可能以数据库承接。分层边界不受影响。
 
-> 已敲定并移入正文的原待定项：序列化采用 JSON（§2.4）；消息对象按单一所有者 / 单次消费的移动语义建模，字段改为 `std::vector<std::byte>`，JSON 兼容通过 `adl_serializer<std::byte>` 特化实现（§2.5）。
+> 已敲定并移入正文的原待定项：序列化采用 JSON（§2.4）；消息对象按单一所有者 / 单次消费的移动语义建模，字段改为 `std::vector<std::byte>`，JSON 兼容通过 `adl_serializer<std::byte>` 特化实现（§2.5）；`common` 与 `server` 的边界按职责划定，各层命名空间归属随目录收敛（§3.3）。

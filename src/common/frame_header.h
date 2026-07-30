@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "server/core/binary_code.h"
+#include "common/binary_code.h"
 
 /*
  *
@@ -21,8 +21,8 @@
  */
 // 这里初始化逻辑不太好，之后看看有没有更好的
 struct FrameHeader {
-    core::Opcode opcode_   = core::Opcode::_init_;
-    core::Status status_   = core::Status::_init_;
+    types::Opcode opcode_   = types::Opcode::_init_;
+    types::Status status_   = types::Status::_init_;
     std::uint32_t body_len_ = 0;
 
     // 编译期计算出帧头大小
@@ -33,10 +33,10 @@ struct FrameHeader {
 
     FrameHeader() = default;
 
-    explicit FrameHeader(core::Opcode opcode, core::Status status) : opcode_(opcode), status_(status) {}
+    explicit FrameHeader(types::Opcode opcode, types::Status status) : opcode_(opcode), status_(status) {}
 
     // op 与 st 均已赋值才可以
-    bool is_valid() const { return opcode_ != core::Opcode::_init_ && status_ != core::Status::_init_; }
+    bool is_valid() const { return opcode_ != types::Opcode::_init_ && status_ != types::Status::_init_; }
 };
 
 #endif //COM_LITE_FRAME_HEADER_H

@@ -14,9 +14,9 @@
 #include <sys/socket.h>
 
 #include "common/frame_header.h"
-#include "server/core/binary_code.h"
-#include "server/core/encoder.h"
-#include "server/core/decoder.h"
+#include "common/binary_code.h"
+#include "common/encoder.h"
+#include "common/decoder.h"
 
 namespace core {
     Core::Core(uint16_t port, int backlog) noexcept : port_(port), backlog_(backlog) {}
@@ -154,7 +154,7 @@ namespace core {
             if (!in.empty()) {
                 // 解码
                 MessagePack     rmp;
-                types::IoStatus dst = Decoder::decode(in, rmp);
+                types::IoStatus dst = codec::Decoder::decode(in, rmp);
                 // 按 opcode 执行操作
                 std::vector<MessagePack> send_queue;
                 message_handler_(fd, rmp, send_queue);
@@ -163,13 +163,14 @@ namespace core {
                 std::size_t result_size = max_message_body_length + FrameHeader::wire_size;
 
                 std::vector<uint32_t> buf_sizes(send_queue.size(), 0);
+                // TODO: 装配器里写编码超长帧检验和有效性检验，否则这里内存浪费太严重了
                 std::vector<std::vector<std::byte>> results(
                     send_queue.size(),
                     std::vector<std::byte>(result_size, std::byte{0x00})
                 );
 
                 for (int i = 0; i < send_queue.size(); ++i) {
-                    types::IoStatus est      = Encoder::encode(send_queue[i], results[i], buf_sizes[i]);
+                    types::IoStatus est = codec::Encoder::encode(send_queue[i], results[i], buf_sizes[i]);
                     if (est != types::IoStatus::ok) {
                         in.clear();
                         close_client(fd);
