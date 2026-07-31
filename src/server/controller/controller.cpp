@@ -2,39 +2,46 @@
 // Created by Neuroil on 2026/7/16.
 //
 
-#include <iostream>
-#include <stdexcept>
 #include "server/controller/controller.h"
 
+#include <utility>
+#include <vector>
+
+#include "common/binary_code.h"
+#include "common/io_status.h"
+
 namespace controller {
-    // Controller::AckAssembler Controller::ack_assembler_ = nullptr;
-    Controller::ResAssembler Controller::res_assembler_ = nullptr;
+    void Controller::process(int fd, const MessagePack& rmp,
+                             std::vector<std::pair<MessagePack, int>>& out_queue) {
+        // 入口校验（docs/architecture.md §2.1）。core.cpp:157 暂未使用 decode 的返回状态，
+        // 解码失败时一个默认构造的空 MessagePack 会到达这里。
+        if (!rmp.is_valid()) {
+            return;
+        }
 
+        std::vector<MessagePack> assembled;
+        types::IoStatus          st = types::IoStatus::ok;
 
-    void Controller::process(int fd, const MessagePack& rmp, std::vector<std::pair<MessagePack, int>>& out_queue) {
-        if (!res_assembler_) throw std::runtime_error("assemblers have no valid objs!");
-
-        // Opcode 判断消息类型
-        // req -> 转发req + 返回res
-        // ack -> 应答ack
-        // 只有服务端才会返回res
+        // Opcode 判断消息类型：req -> 返回 res（转发待跨 fd 写入落地）；ack -> 应答 ack。
         if (rmp.fh_.opcode_ == types::Opcode::ack) {
-            MessagePack ack   = rmp;
-            ack.msg_.content_ = 0x01;
-            out_queue.push_back({ack, fd});
+            st = assembler_.assemble_ack(rmp, assembled);
         } else if (rmp.fh_.opcode_ == types::Opcode::request) {
-            out_queue.push_back({rmp, fd});
+            st = assembler_.assemble_response(rmp, assembled);
+            // 转发给 to_uid_ 的那一帧尚未装配 —— 跨 fd 写入未实现（core.cpp:183）。
+            // 现在产出外部 fd 会让帧被投错人
+        } else {
+            // 只有服务端才会返回 res。
+            // 因此不接收 response，当前静默丢弃
+            return;
+        }
 
-            // 解析当前消息（其实from_user_id_字段就够了）
-            // UserGroup::search(int fd) -> User u
+        if (st != types::IoStatus::ok) {
+            return;
+        }
 
-            // 解析需要送到哪个fd（也可以合为一个函数）
-            // 或者说直接解析到 Connection 可能更好
-            // UserGroup::search(std::string user_id) -> User u
-            // UserGroup::get_user_fd(User user) -> int target_fd
-
-            // 入队
-            // out_queue.push_back({msg_pack, target_fd})
+        // 目前所有出站帧的目标 fd 恒等于入站 fd。
+        for (MessagePack& mp : assembled) {
+            out_queue.emplace_back(std::move(mp), fd);
         }
     }
 } // controller

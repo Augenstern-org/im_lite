@@ -5,37 +5,28 @@
 #ifndef COM_LITE_CONTROLLER_H
 #define COM_LITE_CONTROLLER_H
 
-#include <functional>
 #include <utility>
 #include <vector>
 
-#include "server/coordination/assembler.h"
-#include "server/coordination/users_group.h"
 #include "common/message_pack.h"
+#include "server/coordination/assembler.h"
 
 namespace controller {
     class Controller {
-        // static void request(int fd, const Message& msg, std::vector<MessagePack>& out_queue) {
-        //     //
-        // }
-        //
-        // static void ack(int fd, std::vector<MessagePack>& out_queue) {
-        //     // 直接返回应答
-        // }
-
-        // using AckAssembler = std::function<types::IoStatus(/*interface*/)>;
-        using ResAssembler = std::function<types::IoStatus(/*interface*/)>;
-
-        // static AckAssembler ack_assembler_;
-        static ResAssembler res_assembler_;
-
     public:
-        Controller() = default;
+        explicit Controller(coordination::Assembler& assembler) noexcept : assembler_(assembler) {}
 
-        static void process(int fd, const MessagePack& rmp, std::vector<std::pair<MessagePack, int>>& out_queue);
+        // 引用成员会隐式删除拷贝赋值，并把不可赋值性传染给任何持有者。
+        // 显式 delete 使「不可拷贝」成为写明的意图而非副作用
+        // 注意：显式 delete 拷贝构造会连带抑制隐式移动构造
+        // Controller 因此既不可拷贝也不可移动，不能放进 vector（同 core::Connections）
+        Controller(const Controller&)            = delete;
+        Controller& operator=(const Controller&) = delete;
 
-        // static void set_ack_assembler(AckAssembler a) { ack_assembler_ = std::move(a); }
-        static void set_res_assembler(ResAssembler r) { res_assembler_ = std::move(r); }
+        void process(int fd, const MessagePack& rmp, std::vector<std::pair<MessagePack, int>>& out_queue);
+
+    private:
+        coordination::Assembler& assembler_;
     };
 } // controller
 
