@@ -49,10 +49,7 @@ int main() {
     f.opcode_ = types::Opcode::request;
     f.status_ = types::Status::ok;
 
-    // Encoder 直接 memcpy 进 out_buf，不做越界检查
-    // 缓冲按最大帧长分配
     std::vector<std::byte> bytes;
-    bytes.resize(FrameHeader::wire_size + max_message_body_length);
 
     MessagePack r_msg_pack(f, r);
 

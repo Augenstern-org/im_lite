@@ -27,7 +27,7 @@ namespace controller {
             st = assembler_.assemble_ack(rmp, assembled);
         } else if (rmp.fh_.opcode_ == types::Opcode::request) {
             st = assembler_.assemble_response(rmp, assembled);
-            // 转发给 to_uid_ 的那一帧尚未装配 —— 跨 fd 写入未实现（core.cpp:183）。
+            // 转发给 to_uid_ 的那一帧尚未装配 —— 跨 fd 写入未实现（core.cpp:175）。
             // 现在产出外部 fd 会让帧被投错人
         } else {
             // 只有服务端才会返回 res。

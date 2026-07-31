@@ -159,34 +159,39 @@ namespace core {
                 std::vector<std::pair<MessagePack, int>> send_queue;
                 message_handler_(fd, rmp, send_queue);
 
-                // 编码
-                std::size_t result_size = max_message_body_length + FrameHeader::wire_size;
-
-                std::vector<uint32_t> buf_sizes(send_queue.size(), 0);
-                // TODO: 装配器里写编码超长帧检验和有效性检验，否则这里内存浪费太严重了
-                std::vector<std::vector<std::byte>> results(
-                    send_queue.size(),
-                    std::vector<std::byte>(result_size, std::byte{0x00})
-                );
-
-                for (int i = 0; i < send_queue.size(); ++i) {
-                    types::IoStatus est = codec::Encoder::encode(send_queue[i].first, results[i], buf_sizes[i]);
+                // 编码与发送融合成一个循环，每轮复用 encode_buf_：
+                // encode_buf_ 跨消息、跨连接复用，由 encode() 按需增长（只增不减）；
+                // conn.send() 会把数据拷进 write_buf_，因此编码缓冲的生命周期在 send() 返回时即结束，
+                // 下一轮可以直接覆写。只有 [0, out_len) 会被发送，上一条消息留在尾部的残留字节永不上线。
+                for (auto& item : send_queue) {
+                    uint32_t        out_len = 0;
+                    types::IoStatus est     = codec::Encoder::encode(item.first, encode_buf_, out_len);
                     if (est != types::IoStatus::ok) {
                         in.clear();
                         close_client(fd);
                         return;
                     }
-                }
-
-                for (int i = 0; i < results.size(); ++i) {
-                    // 写入写同一fd的写缓冲区
+                    // 写入同一 fd 的写缓冲区
                     // TODO: 当前程序仅能访问正在处理的连接，转发流量尚未实现
-                    types::IoStatus wst = conn.send(reinterpret_cast<const char*>(results[i].data()), buf_sizes[i]);
-                    in.clear();
+                    types::IoStatus wst = conn.send(reinterpret_cast<const char*>(encode_buf_.data()), out_len);
                     if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {
                         close_client(fd);
                         return;
                     }
+                }
+                // 正常路径上这是等价搬移：原先 clear 写在发送循环体内，send_queue 非空时随条数
+                // 重复执行且幂等，这里收敛成一次。
+                // 唯一的差异在发送失败路径 —— 原先 clear 排在 wst 状态检查之前，失败时也会清空；
+                // 现在失败直接 close_client() + return，走不到这里。该差异没有实际后果：
+                // close_client() 把 fd 推进 pending_close_，drain_pending_close() 随后
+                // conns_.erase(fd) 析构掉整个 Connections，read_buf_ 跟着一起消失 ——
+                // 对一个即将被销毁的缓冲区做 clear() 是无意义操作。
+                // 不可改成解码后无条件清空 —— send_queue 为空的一种情形是半帧未齐（decode 因
+                // in_buf.size() - wire_size < body_len 返回 error，控制层随即提前 return），
+                // 此时「不清空」正是拆包重组赖以工作的机制：下一次 EPOLLIN 会把剩余字节追加到
+                // read_buf_ 尾部，帧凑齐后正常解码。无条件清空会丢弃半帧、让连接永久失步。
+                if (!send_queue.empty()) {
+                    in.clear();
                 }
             }
 

@@ -5,6 +5,7 @@
 #ifndef COM_LITE_CORE_H
 #define COM_LITE_CORE_H
 
+#include <cstddef>
 #include <functional>
 #include <unordered_map>
 #include <utility>
@@ -51,6 +52,8 @@ namespace core {
         std::vector<int>                     pending_close_;
         message_handler                      message_handler_;
         disconnect_handler                   disconnect_handler_;
+        // 出站编码的复用缓冲：跨消息、跨连接共用一块，由 Encoder::encode() 按需增长（只增不减）。
+        std::vector<std::byte>               encode_buf_;
     };
 } // namespace core
 #endif // COM_LITE_CORE_H
