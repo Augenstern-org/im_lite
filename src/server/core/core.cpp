@@ -151,13 +151,42 @@ namespace core {
 
             // 回显先于读状态分派：on_readable() 可能在同一次调用里既追加数据又返回 closed
             std::vector<std::byte>& in = conn.read_buffer();
-            if (!in.empty()) {
-                // 解码
+
+            // 分帧推进 + 错误路径三连（docs/logs/2026-07-31.md §4.4）。四条承重理由：
+            // (a) 必须 drain 到 incomplete，不设帧数上限。全仓无 EPOLLET（LT），on_readable 已把
+            //     内核接收缓冲抽干到 EAGAIN；若只解一帧就退出，用户态 in 里的第二帧等不到新的
+            //     EPOLLIN，会一直 stall 到对端再发字节。唯一的量化闸是 kReadSoftCap 64KiB。
+            // (b) erase 必须先于 message_handler_。main.cpp:39-43 的 try/catch 包着整个 run()，
+            //     handler 抛异常会栈展开出 handle_client；游标先推进则毒帧已出局，后推进就是
+            //     下次再解同一帧再抛，构成 livelock。
+            // (c) 循环体内 close_client 调用点为 0，所有杀决策只写 fatal = true; break;，
+            //     EPOLLIN 分支收敛成恰好一个 close_client(fd); return;（全函数 6 处 → 3 处）。
+            // (d) 不加读缓冲上限，恒界可推导：drain 退出时 in 中只剩一个未完成帧（< 6 字节，
+            //     或 wire_size + k 且 k < body_len ≤ 65530）⇒ 残留 ≤ 65535；on_readable 每轮
+            //     append ≤ 4096 且 size() >= 65536 即返回 ⇒ read_buf_ ≤ 69631 字节恒成立。
+            //     承重前提：帧头未齐与 frame_too_long 校验必须先于帧体未齐校验（decoder.h 次序，
+            //     S2 已在该文件落实为注释）。
+            // 本分支不再清空读缓冲：字节消费由 ok 路径的精确 erase 承担；半帧重组由 incomplete
+            // 原样保留字节 + 下面的 break 出口承担（下一次 EPOLLIN 把剩余字节追加到尾部凑齐）。
+            bool fatal = false;
+            std::vector<std::pair<MessagePack, int>> send_queue; // 每帧复用，循环体顶部先清空
+            while (!in.empty()) {
                 MessagePack     rmp;
                 types::IoStatus dst = codec::Decoder::decode(in, rmp);
-                // 按 opcode 执行操作
-                std::vector<std::pair<MessagePack, int>> send_queue;
-                message_handler_(fd, rmp, send_queue);
+                if (dst == types::IoStatus::incomplete) break; // 唯一「保留字节」的出口
+                if (dst != types::IoStatus::ok) { fatal = true; break; }
+
+                // 先推进，再派发：当且仅当 Decoder::decode 返回 IoStatus::ok 时，本帧消耗
+                // FrameHeader::wire_size + out_rmp.fh_.body_len_ 字节；其余返回值下该表达式无定义
+                // （docs/logs/2026-07-31.md §4.3 契约原文，承重本行 erase）。
+                in.erase(in.begin(), in.begin() + FrameHeader::wire_size + rmp.fh_.body_len_);
+                // ↑ 此行之后，本轮循环再无「既不推进也不终止」的分支
+
+                // 按 opcode 执行操作。回调判空（三连②）：未注册时不产出也不崩溃。
+                send_queue.clear();
+                if (message_handler_) {
+                    message_handler_(fd, rmp, send_queue);
+                }
 
                 // 编码与发送融合成一个循环，每轮复用 encode_buf_：
                 // encode_buf_ 跨消息、跨连接复用，由 encode() 按需增长（只增不减）；
@@ -167,40 +196,22 @@ namespace core {
                     uint32_t        out_len = 0;
                     types::IoStatus est     = codec::Encoder::encode(item.first, encode_buf_, out_len);
                     if (est != types::IoStatus::ok) {
-                        in.clear();
-                        close_client(fd);
-                        return;
+                        fatal = true;
+                        break;
                     }
                     // 写入同一 fd 的写缓冲区
                     // TODO: 当前程序仅能访问正在处理的连接，转发流量尚未实现
                     types::IoStatus wst = conn.send(reinterpret_cast<const char*>(encode_buf_.data()), out_len);
                     if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {
-                        close_client(fd);
-                        return;
+                        fatal = true;
+                        break;
                     }
                 }
-                // 正常路径上这是等价搬移：原先 clear 写在发送循环体内，send_queue 非空时随条数
-                // 重复执行且幂等，这里收敛成一次。
-                // 唯一的差异在发送失败路径 —— 原先 clear 排在 wst 状态检查之前，失败时也会清空；
-                // 现在失败直接 close_client() + return，走不到这里。该差异没有实际后果：
-                // close_client() 把 fd 推进 pending_close_，drain_pending_close() 随后
-                // conns_.erase(fd) 析构掉整个 Connections，read_buf_ 跟着一起消失 ——
-                // 对一个即将被销毁的缓冲区做 clear() 是无意义操作。
-                // 不可改成解码后无条件清空 —— send_queue 为空的一种情形是半帧未齐（decode 因
-                // in_buf.size() - wire_size < body_len 返回 error，控制层随即提前 return），
-                // 此时「不清空」正是拆包重组赖以工作的机制：下一次 EPOLLIN 会把剩余字节追加到
-                // read_buf_ 尾部，帧凑齐后正常解码。无条件清空会丢弃半帧、让连接永久失步。
-                if (!send_queue.empty()) {
-                    in.clear();
-                }
+                if (fatal) break;
             }
 
-            if (rst == types::IoStatus::error) {
-                close_client(fd);
-                return;
-            }
-            // 对端已发 FIN 但仍在读回显，写缓冲排空后由 on_writeable() 收尾
-            if (rst == types::IoStatus::closed && !conn.want_write()) {
+            if (fatal || rst == types::IoStatus::error ||
+                (rst == types::IoStatus::closed && !conn.want_write())) {
                 close_client(fd);
                 return;
             }

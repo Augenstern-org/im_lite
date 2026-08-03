@@ -147,31 +147,31 @@ namespace {
     // ---------------------------------------------------------------------
     // D6 —— 不足帧头长度
     // ---------------------------------------------------------------------
-    void decode_rejects_short_buffer() {
+    void decode_returns_incomplete_for_short_buffer() {
         MessagePack rmp;
 
         const std::vector<std::byte> empty;
-        CHECK(codec::Decoder::decode(empty, rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(empty, rmp) == types::IoStatus::incomplete);
 
         std::vector<std::byte> five;
         five.resize(5, std::byte{0x00});
-        CHECK(codec::Decoder::decode(five, rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(five, rmp) == types::IoStatus::incomplete);
     }
 
     // ---------------------------------------------------------------------
     // D7 —— 头部声明 119，实际只带 118 字节载荷
     // ---------------------------------------------------------------------
-    void decode_rejects_truncated_body() {
+    void decode_returns_incomplete_for_truncated_body() {
         const std::vector<std::byte> in = make_frame(0x01, 0x00, 119u, kJsonGv1.substr(0, 118));
         CHECK(in.size() == 124);
 
         MessagePack rmp;
-        CHECK(codec::Decoder::decode(in, rmp) == types::IoStatus::error);
+        CHECK(codec::Decoder::decode(in, rmp) == types::IoStatus::incomplete);
     }
 
     // ---------------------------------------------------------------------
     // D8 —— 对端声明 4 GiB：必须在长度上限检查处以 frame_too_long 返回，绝不用该长度驱动分配。
-    //        该检查先于"载荷是否够长"的 error 分支，故此处不是 error。
+    //        该检查先于「载荷是否够长」的 incomplete 分支，故此处不是 incomplete。
     // ---------------------------------------------------------------------
     void decode_rejects_absurd_declared_len() {
         const std::vector<std::byte> in = make_frame(0x01, 0x00, 0xFFFFFFFFu, kJsonGv1);
@@ -307,10 +307,10 @@ namespace {
         CHECK(codec::Decoder::decode(make_frame(0x07, 0x00, kJsonGv1), rmp) == types::IoStatus::error);
         check_sentinels();
 
-        // 载荷截断（长度界限阶段失败）
+        // 载荷截断（长度界限阶段：incomplete，出参同样逐位未动）
         CHECK(
             codec::Decoder::decode(make_frame(0x01, 0x00, 119u, kJsonGv1.substr(0, 118)), rmp)
-            == types::IoStatus::error
+            == types::IoStatus::incomplete
         );
         check_sentinels();
     }
@@ -349,8 +349,8 @@ int main() {
     decode_hand_authored_utf8_cjk();
     decode_tolerates_oversized_buffer();
     decode_accepts_exactly_sized_buffer();
-    decode_rejects_short_buffer();
-    decode_rejects_truncated_body();
+    decode_returns_incomplete_for_short_buffer();
+    decode_returns_incomplete_for_truncated_body();
     decode_rejects_absurd_declared_len();
     decode_rejects_unknown_opcode();
     decode_rejects_init_opcode();

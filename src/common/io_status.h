@@ -14,6 +14,7 @@ namespace types {
         frame_too_long,
         timeout,
         error,
+        incomplete,
     };
 
     // 面向日志 / 诊断的可读名称。永不返回 nullptr。
@@ -26,6 +27,7 @@ namespace types {
             case IoStatus::frame_too_long:  return "FrameTooLong";
             case IoStatus::timeout:         return "Timeout";
             case IoStatus::error:           return "Error";
+            case IoStatus::incomplete:      return "Incomplete";
         }
         return "Unknown";
     }

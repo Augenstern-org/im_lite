@@ -13,8 +13,10 @@
 namespace controller {
     void Controller::process(int fd, const MessagePack& rmp,
                              std::vector<std::pair<MessagePack, int>>& out_queue) {
-        // 入口校验（docs/architecture.md §2.1）。core.cpp:157 暂未使用 decode 的返回状态，
-        // 解码失败时一个默认构造的空 MessagePack 会到达这里。
+        // 入口校验（docs/architecture.md §2.1）。message_handler_ 只在 decode() 返回 ok 时被调用
+        // （core.cpp drain 循环），而 ok 蕴含 msg.is_valid() 已过且帧头两枚举已知 —— 本检查是
+        // 文档化的死代码：Controller::process 是公有方法，跨层防御便宜，兜底保留
+        // （docs/logs/2026-07-31.md §4.6）。
         if (!rmp.is_valid()) {
             return;
         }

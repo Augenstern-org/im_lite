@@ -28,7 +28,8 @@ namespace codec {
             MessagePack&                  out_rmp
         ) noexcept {
             try {
-                if (in_buf.size() < FrameHeader::wire_size) return types::IoStatus::error;
+                // 帧头未齐：保留字节等待更多数据，返回 incomplete（与协议错误区分开）。
+                if (in_buf.size() < FrameHeader::wire_size) return types::IoStatus::incomplete;
 
                 // 枚举值域校验先于 static_cast
                 const auto raw_opcode = static_cast<std::uint8_t>(in_buf[0]);
@@ -41,8 +42,17 @@ namespace codec {
                 std::memcpy(&body_len, in_buf.data() + 2, sizeof(body_len));
                 body_len = ntohl(body_len);
 
+                // 承重次序 1：frame_too_long 校验必须先于帧体完整性校验。
+                // 违反它会让 incomplete 携带一个未经校验的 body_len，读缓冲重新变成无界——
+                // 即引入 incomplete 所要消灭的 bug 换条路重建。
                 if (body_len > max_message_body_length) return types::IoStatus::frame_too_long;
-                if (in_buf.size() - FrameHeader::wire_size < body_len) return types::IoStatus::error;
+
+                // 承重次序 2：in_buf.size() - wire_size 的无符号下溢不可达，因为帧头未齐检查（:31）已先返回。
+                // 减法写法是有意的（原为防 32 位平台上 body_len 接近 UINT32_MAX 时右侧溢出）；
+                // 订正：该防溢出理由已随上面的上限校验失效（6 + body_len 在 32 位上不可能溢出），
+                // 写法保留无害，靠的是顺序而非自身。
+                // 帧体未齐：保留字节等待更多数据，返回 incomplete。
+                if (in_buf.size() - FrameHeader::wire_size < body_len) return types::IoStatus::incomplete;
 
                 const std::string s(
                     reinterpret_cast<const char*>(in_buf.data()) + FrameHeader::wire_size,
