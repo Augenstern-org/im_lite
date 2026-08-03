@@ -14,8 +14,10 @@
 int main() {
     // 声明顺序即所有权顺序：Core 持有捕获了 &controller 的 lambda，
     // 反序析构保证 Core 先于被捕获对象销毁（C++ Core Guidelines F.53）。
-    coordination::Assembler assembler;
-    controller::Controller  controller(assembler);
+    coordination::Assembler  assembler;
+    coordination::UsersGroup users_group;
+
+    controller::Controller controller(assembler, users_group);
 
     core::Core core(7891, 2);
     if (!core.init()) {

@@ -10,11 +10,15 @@
 
 #include "common/message_pack.h"
 #include "server/coordination/assembler.h"
+#include "server/coordination/users_group.h"
 
 namespace controller {
     class Controller {
     public:
-        explicit Controller(coordination::Assembler& assembler) noexcept : assembler_(assembler) {}
+        explicit Controller(
+            coordination::Assembler&  assembler,
+            coordination::UsersGroup& users_group
+        ) noexcept : assembler_(assembler), users_group_(users_group) {}
 
         // 引用成员会隐式删除拷贝赋值，并把不可赋值性传染给任何持有者。
         // 显式 delete 使「不可拷贝」成为写明的意图而非副作用
@@ -24,9 +28,11 @@ namespace controller {
         Controller& operator=(const Controller&) = delete;
 
         void process(int fd, const MessagePack& rmp, std::vector<std::pair<MessagePack, int>>& out_queue);
+        bool query(const std::string& uid, int& fd) const;
 
     private:
-        coordination::Assembler& assembler_;
+        coordination::Assembler&  assembler_;
+        coordination::UsersGroup& users_group_;
     };
 } // controller
 

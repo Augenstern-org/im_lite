@@ -11,8 +11,11 @@
 #include "common/io_status.h"
 
 namespace controller {
-    void Controller::process(int fd, const MessagePack& rmp,
-                             std::vector<std::pair<MessagePack, int>>& out_queue) {
+    void Controller::process(
+        int                                       fd,
+        const MessagePack&                        rmp,
+        std::vector<std::pair<MessagePack, int>>& out_queue
+    ) {
         // 入口校验（docs/architecture.md §2.1）。message_handler_ 只在 decode() 返回 ok 时被调用
         // （core.cpp drain 循环），而 ok 蕴含 msg.is_valid() 已过且帧头两枚举已知 —— 本检查是
         // 文档化的死代码：Controller::process 是公有方法，跨层防御便宜，兜底保留
@@ -28,9 +31,18 @@ namespace controller {
         if (rmp.fh_.opcode_ == types::Opcode::ack) {
             st = assembler_.assemble_ack(rmp, assembled);
         } else if (rmp.fh_.opcode_ == types::Opcode::request) {
+            // 回复消息
             st = assembler_.assemble_response(rmp, assembled);
-            // 转发给 to_uid_ 的那一帧尚未装配 —— 跨 fd 写入未实现（core.cpp:175）。
-            // 现在产出外部 fd 会让帧被投错人
+
+            // 查询 fd
+            bool success = true;
+            int  to_fd   = -1;
+
+            std::string uid = rmp.msg_.to_uid_;
+
+            success = query(uid, to_fd);
+            // 转发
+            if (success) out_queue.emplace_back(rmp, to_fd);
         } else {
             // 只有服务端才会返回 res。
             // 因此不接收 response，当前静默丢弃
@@ -45,5 +57,9 @@ namespace controller {
         for (MessagePack& mp : assembled) {
             out_queue.emplace_back(std::move(mp), fd);
         }
+    }
+
+    bool Controller::query(const std::string& uid, int& fd) const {
+        return users_group_.query(uid, fd);
     }
 } // controller

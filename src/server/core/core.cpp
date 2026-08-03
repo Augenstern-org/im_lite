@@ -193,15 +193,23 @@ namespace core {
                 // conn.send() 会把数据拷进 write_buf_，因此编码缓冲的生命周期在 send() 返回时即结束，
                 // 下一轮可以直接覆写。只有 [0, out_len) 会被发送，上一条消息留在尾部的残留字节永不上线。
                 for (auto& item : send_queue) {
+                    // 查询 conn
+                    auto to_it = conns_.find(item.second);
+                    if (to_it == conns_.end()) {
+                        fatal = true;
+                        break;
+                    }
+                    Connections& to_conn = to_it->second;
+
+                    // 编码
                     uint32_t        out_len = 0;
                     types::IoStatus est     = codec::Encoder::encode(item.first, encode_buf_, out_len);
                     if (est != types::IoStatus::ok) {
                         fatal = true;
                         break;
                     }
-                    // 写入同一 fd 的写缓冲区
-                    // TODO: 当前程序仅能访问正在处理的连接，转发流量尚未实现
-                    types::IoStatus wst = conn.send(reinterpret_cast<const char*>(encode_buf_.data()), out_len);
+
+                    types::IoStatus wst = to_conn.send(reinterpret_cast<const char*>(encode_buf_.data()), out_len);
                     if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {
                         fatal = true;
                         break;

@@ -26,8 +26,8 @@ namespace core {
 
         // 回调函数
         using message_handler = std::function<void(
-            int                       fd,
-            const MessagePack&        in,
+            int                                       fd,
+            const MessagePack&                        in,
             std::vector<std::pair<MessagePack, int>>& out_queue
         )>;
         using disconnect_handler = std::function<void(int fd)>;
