@@ -13,6 +13,7 @@ add_com_lite_test(Message    test_message)
 add_com_lite_test(Encoder    test_encoder)
 add_com_lite_test(Decoder    test_decoder)
 add_com_lite_test(RoundTrip  test_roundtrip)
+add_com_lite_test(UsersGroup  test_users_group)
 
 # 头文件自足性：src/ 下每个头文件各生成一个只包含它自己的翻译单元，
 # 全部链进 test_headers。断言在编译期完成 —— 头文件若少写自己直接用到的
