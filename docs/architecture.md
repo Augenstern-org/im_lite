@@ -26,8 +26,10 @@ src/
   server/
     main.cpp         装配 Core / Controller，注册回调，run()
     core/            connections.*（连接对象与读写缓冲）、core.*（epoll 事件循环）
-    controller/      controller.h（按 opcode 派发，当前仍为回显）
-    coordination/    user.h、users_group.h、assembler.h（后两者尚为骨架）
+    controller/      controller.*（按 opcode 三路派发：request→转发+回显、ack→应答、response→丢弃；
+                       auth / register_user / delete_fd 接口通过 UsersGroup 间接操作）
+    coordination/    user.h（用户对象，当前单 fd，预留向量化）、users_group.h（uid↔fd 双向映射，
+                       注册/注销/查询）、assembler.h（装配器，header-only）
   client/
     main.cpp         调试用客户端：连接 → 编码发一帧 → 打印回显
 include/       json.hpp（第三方单头文件库）
@@ -193,18 +195,18 @@ fd 会被操作系统回收复用，这是即时通信服务端最典型的串�
 
 1. ✅ **抽出 socket + epoll 装配**：把 `main.cpp` 中的监听 socket 创建与 epoll 循环搬入核心层。`main()` 收敛为"构建核心层 → 运行"。这是最机械、最安全的一刀。
 2. ✅ **每条客户端连接对象化**：以连接对象（持有 fd 与读 / 写缓冲）替代原型中裸 `buf` 与"发完不管"的 `send`。读写返回接入 `IoStatus`。此步同时修正原型中"写返回 `EAGAIN` 时静默丢数据"的问题。
-3. 🚧 **插入编解码（帧切分）**：在核心层读缓冲的字节与 `Message` 之间加入分帧，采用固定头 + 可变体的帧结构（见 §2.4）。编解码器本身已完成并有黄金字节测试兜底；**分帧状态机尚未实现**——`Decoder::decode()` 目前假定调用方已切出完整帧，粘包 / 拆包还没有落点；超长帧的长度校验已在编解码两侧落地（见 §7），仍缺的是"头部声明超长时如何丢弃后续字节并关闭连接"这一连接级处置。
-4. 🚧 **落业务与用户组**：协调层（含用户组）承接完整流程，控制层承接入口校验与派发。已完成的是**接线**：`Core` 通过 `set_message_handler()` 注册回调，签名为
+3. 🚧 **插入编解码（帧切分）**：在核心层读缓冲的字节与 `Message` 之间加入分帧，采用固定头 + 可变体的帧结构（见 §2.4）。编解码器本身已完成并有黄金字节测试兜底；**粘包 / 拆包已通过 `IoStatus::incomplete` + drain 循环落地**——`Decoder::decode()` 在帧头/帧体未齐时返回 `incomplete`（`decoder.h:32, :55`），`core.cpp:179-186` 的 drain 循环保留半帧字节等待下一次 `EPOLLIN` 补齐，超长帧走 `frame_too_long` → `fatal` → 关连接。仍未落地的是**流式增量解析**（性能优化——不把整帧字节攒在 `read_buf_` 里就能推进解析；详见 `TODO.md`「分帧状态机」条）。
+4. 🚧 **落业务与用户组**：协调层（含用户组）承接完整流程，控制层承接入口校验与派发。**接线已完成**：`Core` 通过回调注册（`set_message_handler` / `set_disconnect_handler` / `set_register_handler` / `set_auth_handler`），签名为
 
    ```cpp
-   std::function<void(int fd, const MessagePack& in, std::vector<MessagePack>& out_queue)>
+   std::function<void(int fd, const MessagePack& in, std::vector<std::pair<MessagePack, int>>& out_queue)>
    ```
 
-   出参取消息队列而非单个返回值，因为一条入站消息可能产生多条出站帧（转发的 request 与回给发送方的 response 是两条独立的帧）。核心层不再自造消息，只负责搬运。**尚未完成**：`Controller::process()` 仍把入站包原样压回队列（回显），按 opcode 的三条分派路径与 `UsersGroup` 的真实路由都还没接上——`fd` 参数已经传到控制层但没有被使用。
+   出参取 `(MessagePack, fd)` 对而非单个返回值，因为一条入站消息可能产生多条出站帧（转发的 request 与回给发送方的 response 是两条独立的帧，各自目标 fd 可能不同）。核心层不再自造消息，只负责搬运。**已完成**：`Controller::process()` 按 opcode 三路分派——`request` → `assemble_response` + 查 `UsersGroup::query` 转发到目标 fd；`ack` → `assemble_ack` 应答；`response` → 静默丢弃。`register_handler` 已接线（当前 hardcode `"guest"`，登录协议落地前所有连接共享同一 uid）。**尚未完成**：`auth_handler` 已声明但校验逻辑仍是恒返回 `true` 的占位；EPOLLOUT 武装、`pending_close_` 排除两子项随跨 fd 转发部分落地而暴露，仍待解决（见 `TODO.md` 第 1 条）。
 
 ## 6. 验证
 
-`ctest` 下七个目标，分为两类。
+`ctest` 下十个目标，分为两类。
 
 **编解码正确性**——三类断言正交覆盖，每类钉死一条不重叠的契约边（详见 2026-07-27 日志）：
 
@@ -220,8 +222,10 @@ fd 会被操作系统回收复用，这是即时通信服务端最典型的串�
 
 ## 7. 待定项
 
-- **登录 / 握手协议**（未决）：uid ↔ fd 绑定发生在登录时，登录指令的具体形态（认证方式、`msg_type_` 取值）尚未定义。
-- **超长帧防护**（长度校验已落地，分帧仍缺）：上限常量 `max_message_body_length = 65530`（`common/message.h`），语义为**帧体字节数，不含 6 字节头**（与 §2.4 的 `body_len` 同义）。编解码两侧现已各有一道校验并产出 `IoStatus::FrameTooLong`：`Decoder::decode()` 在 `ntohl` 解出 `body_len` 之后、按该长度取包体之前拒绝；`Encoder::encode()` 在序列化完成之后、**向 `out_buf` 写入之前**拒绝——这个次序是硬约束，写在 `memcpy` 之后等于越界已经发生，且会破坏 `encode()` 自述的"返回错误时 `out_buf` 一字节未动"后置条件。仍未落地的是**分帧状态机**（§5 步 3）：粘包 / 拆包的切分，以及"头部声明超长时如何丢弃后续字节并关闭连接"的连接级处置。
+> **本节的开放事项已迁移至 `TODO.md`**（本仓库唯一的开放事项清单）。以下保留为历史上下文，实际待办状态以 `TODO.md` 为准。
+
+- **登录 / 握手协议**（未决）：uid ↔ fd 绑定发生在登录时，登录指令的具体形态（认证方式、`msg_type_` 取值）尚未定义。`register_handler` 已接线（当前 hardcode `"guest"`），`auth_handler` 已声明但校验逻辑仍是恒返回 `true` 的占位。
+- **超长帧防护**（长度校验已落地，连接级处置仍缺）：上限常量 `max_message_body_length = 65530`（`common/message.h`），语义为**帧体字节数，不含 6 字节头**（与 §2.4 的 `body_len` 同义）。编解码两侧现已各有一道校验并产出 `IoStatus::FrameTooLong`。粘包 / 拆包已通过 `IoStatus::incomplete` + drain 循环落地（见 §5 步 3）；仍缺的是"头部声明超长时如何丢弃后续字节并关闭连接"的连接级处置。
 - **`ResponseMsg::server_seq_` 的去向**（未决）：随消息模型塌缩去掉，尚未确定以何种形式回归（见 §2.5）。
 - **离线消息暂存**（暂不实现）：目标 uid 当前无在线 fd 时的处理暂不落地，仅在协调层预留接口占位；未来可能以数据库承接。分层边界不受影响。
 

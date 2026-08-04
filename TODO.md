@@ -6,31 +6,28 @@
 
 ### 待办
 
-- [ ] **跨 fd 转发（最高优先级，牵涉核心层底层实现）** `src/server/core/core.cpp:175`
-  `handle_client()` 把 `send_queue` 里**每一条**出站帧都写给 `conn` —— 当前正在被服务的那条连接，
-  `item.second`（目标 fd）自始至终没有被读取。转发功能因此不存在；而且在它落地之前，
-  上层**不得**产出指向其它 fd 的出站帧：那会让帧被**投错人**，比缺功能更糟。
-  核心层需要新增「按 fd 取到 `Connections` 并驱动其写事件」的能力 —— `conns_` 在 `core.h:51` 是私有的、
-  没有任何访问器，`Core` 的公开面只有 `init` / `run` / 两个 setter。
-  - [ ] 目标 fd 的 `EPOLLOUT` 无人武装：`update_events()`（`core.h:43`，私有）在 `core.cpp:209`
+- [ ] **跨 fd 转发 — EPOLLOUT 武装与 pending_close_ 排除** `src/server/core/core.cpp:206`
+  > 基础通路已落地（`controller.cpp:45` 的 `out_queue.emplace_back(rmp, to_fd)`，
+  > `core.cpp:206` 的 `conns_.find(item.second)` 查目标连接写入）。以下子项仍待做。
+  - [ ] 目标 fd 的 `EPOLLOUT` 无人武装：`update_events()`（`core.h:43`，私有）在 `core.cpp:237`
     只对**当前** fd 调用一次。向另一个 fd 部分写入后，没有任何地方会给它挂上 `EPOLLOUT`，
     该连接的出站数据会**静默无限期滞留**。反方向同样要小心：LT 模式下 `EPOLLOUT` 挂在空闲可写的
     socket 上会让每次 `epoll_wait` 立刻返回，形成 CPU 空转。规则是「写缓冲非空才武装，排空即撤」。
-  - [ ] 目标 fd 可能已在 `pending_close_` 里：`close_client()`（`core.cpp:229-233`）只做
-    `EPOLL_CTL_DEL` + 入队，真正的 `erase` 推迟到 `drain_pending_close()`（`core.cpp:236-244`）。
+  - [ ] 目标 fd 可能已在 `pending_close_` 里：`close_client()`（`core.cpp:257-261`）只做
+    `EPOLL_CTL_DEL` + 入队，真正的 `erase` 推迟到 `drain_pending_close()`（`core.cpp:264-272`）。
     因此 `conns_.find(target_fd)` **仍能命中**一个已被摘出 epoll、即将销毁的连接。
     跨 fd 写入必须同时排除 `pending_close_` 中的 fd。
-  - [ ] 打通后才谈得上路由接入：`to_uid_` → fd 集合的解析与 fan-out（协调层职责，
-    见 `docs/architecture.md` §2.2）。装配器只装配、不路由，路由是独立的一份工作。
+  - [ ] fan-out：`to_uid_` → fd 集合的解析与多 fd 分发（协调层职责，
+    见 `docs/architecture.md` §2.2）。当前 `User` 仅持单 `fd_`，需等向量化落地。
 
-- [ ] **`UsersGroup` 没有接入点** `src/server/coordination/users_group.h:13-17`
-  `UsersGroup` 只有一个私有 `std::unordered_map<uint32_t, User> group_`，零方法；
-  `User`（`user.h:11-16`）只有一个私有 `std::vector<int> connections_`，没有 uid 字段、没有方法。
-  - [ ] 键类型不匹配：`group_` 的键是 `uint32_t`，而 `Message::from_uid_` / `to_uid_`
+- [x] **`UsersGroup` 没有接入点** `src/server/coordination/users_group.h`
+  > 2026-08-04 落地：键统一为 `std::string`，新增 `register_user` / `delete_fd` / `query`，双向映射 `uid_to_fd_` + `fd_to_uid_`；
+  > `disconnect_handler` 已调用 `controller.delete_fd(fd)` 解绑；纯头文件无需独立 CMake target。
+  - [x] 键类型不匹配：`group_` 的键是 `uint32_t`，而 `Message::from_uid_` / `to_uid_`
     （`src/common/message.h:34-35`）是 `std::string`。二者必须先统一。
-  - [ ] 断开时解绑没有落点：`main.cpp` 的 disconnect 回调只打印日志。`docs/architecture.md:167-176`
+  - [x] 断开时解绑没有落点：`main.cpp` 的 disconnect 回调只打印日志。`docs/architecture.md:167-176`
     要求断开即从用户组移除 fd，否则 fd 号被新连接复用后会**把消息发给错的人**。
-  - [ ] `users_group.cpp` 不属于任何 CMake target（`src/server/CMakeLists.txt`）。一旦给
+  - [x] `users_group.cpp` 不属于任何 CMake target（`src/server/CMakeLists.txt`）。一旦给
     `UsersGroup` 补外联成员函数，`server` 立即 undefined reference。是建 `coordination`
     独立库还是并入 `server` 可执行，随接入一并定。
 
@@ -44,16 +41,17 @@
 
 - [ ] **应答 / 响应帧的帧体形态未定**
   - [ ] `ack` 的帧体是占位：`content_ = '\x01'`，长度 1、内容为字节 0x01 的字符串，
-    不是任何约定的应答体（`src/server/coordination/assembler.cpp`）。
+    不是任何约定的应答体（`src/server/coordination/assembler.h:39-47`）。
   - [ ] `request` 的响应帧当前把入站 `Message` 原样复制，只把 opcode 翻成 `response`。
     真正该带的是服务端消息序号 —— 即下一条。
 
-- [ ] **`ResponseMsg::server_seq_` 的去向** `docs/architecture.md:225`
+- [ ] **`ResponseMsg::server_seq_` 的去向** `docs/architecture.md:229`
   随消息模型塌缩去掉，尚未确定以何种形式回归：`Message` 的可选字段，还是移进帧头。
 
-- [ ] **登录 / 握手协议** `docs/architecture.md:223`
+- [ ] **登录 / 握手协议** `docs/architecture.md:227`
+  > `register_handler` 已接线（`core.cpp:118`，当前 hardcode `"guest"`），
+  > `auth_handler` 已声明但校验逻辑仍是恒返回 `true` 的占位（`controller.cpp:66-69`）。
   uid ↔ fd 绑定发生在登录时，但登录指令的具体形态（认证方式、`msg_type_` 取值）尚未定义。
-  这是 `UsersGroup` 能被填充的前提。
 
 - [ ] **分帧状态机** `src/common/decoder.h:25`
   范围说明（2026-08-03 改写）：本条现在**只为流式增量解析（性能议题）存在**——不把整帧攒在
@@ -82,9 +80,9 @@
   端到端联调只能靠客户端侧的回显判断。
 
 - [ ] **`docs/architecture.md` 与代码漂移**
-  - [ ] `:200` 的 handler 签名仍写 `std::vector<MessagePack>&`，实际是
-    `std::vector<std::pair<MessagePack, int>>&`（`src/server/core/core.h:28-32`）。
-  - [ ] `:203`「仍为回显」与 `:30` 的骨架清单已过时。
+  - [x] `:200` 的 handler 签名仍写 `std::vector<MessagePack>&`，实际是
+    `std::vector<std::pair<MessagePack, int>>&`。→ 2026-08-04 已修正。
+  - [x] `:203`「仍为回显」与 `:30` 的骨架清单已过时。→ 2026-08-04 已更新。
   - [ ] `:165` 引用的 `main.cpp` 行号（`:14` / `:19` / `:29`）与实际不符。
   - [ ] `:224`「超长帧防护」给次序硬约束列了**两条**理由，其中一条已作废：原文写
     「`Encoder::encode()` 在序列化完成之后、**向 `out_buf` 写入之前**拒绝——这个次序是硬约束，
@@ -94,9 +92,10 @@
     （`out_buf` 一字节未动）仍然成立。次序硬约束本身**依然是硬约束**，只是现役理由变成
     「防 DoS 放大：先分配后校验等于让 6 字节头诱导一次 64KB 分配」与「`resize` 会抛
     `bad_alloc`，必须排在 `body_len_` 回写之前，失败路径才不留下半写状态」——
-    两条都记在 `encoder.h:87-94` 的注释里。
-  - [ ] `§7 待定项`（`:221-226`）改为指向本文件，不再各自维护一份。
-    
+    两条都记在 `encoder.h:87-94` 的注释里。→ architecture.md §7 超长帧防护段已缩短，
+    此条目所指的具体文字已变更，相关理由以 `encoder.h` 注释为准。
+  - [x] `§7 待定项`（`:221-226`）改为指向本文件，不再各自维护一份。→ 2026-08-04 已添加指向。
+
 - [ ] `UsersGroup` `注册fd` `删除fd` 改为多线程设计。
 - [ ] `register_handler` 暂时不能正确地将 `fd` 添加到 `uid_to_fd_` / `fd_to_uid_` 两哈希表，因为 `accept_client` 阶段不能读取 `uid`。
 
