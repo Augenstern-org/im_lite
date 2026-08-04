@@ -62,4 +62,20 @@ namespace controller {
     bool Controller::query(const std::string& uid, int& fd) const {
         return users_group_.query(uid, fd);
     }
+
+    bool Controller::auth(const std::string& uid) {
+        // 目前还没想好怎么校验
+        return true;
+    }
+
+    bool Controller::register_user(const std::string& uid, int fd) {
+        return users_group_.register_user(uid, fd);
+    }
+
+    bool Controller::delete_fd(int fd) {
+        return users_group_.delete_fd(fd);
+    }
+
+
+
 } // controller

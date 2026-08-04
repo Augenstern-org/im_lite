@@ -27,6 +27,10 @@ namespace controller {
         Controller(const Controller&)            = delete;
         Controller& operator=(const Controller&) = delete;
 
+        static bool auth(const std::string& uid);
+        bool register_user(const std::string& uid, int fd);
+        bool delete_fd(int fd);
+
         void process(int fd, const MessagePack& rmp, std::vector<std::pair<MessagePack, int>>& out_queue);
         bool query(const std::string& uid, int& fd) const;
 

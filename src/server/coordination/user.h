@@ -11,7 +11,7 @@ namespace coordination {
     class User {
     private:
         // fds
-        // std::vector<int> connections_;
+        // std::vector<int> fds_;
         int fd_ = -1;
 
     public:
@@ -34,7 +34,11 @@ namespace coordination {
         // 向量化之后需要实现的函数
         // void add(int fd);
         // std::vector<int>& vec();
-        // bool delete_device(const std::string& device_id);
+        bool delete_device(int fd) {
+            // fds_.erase(fd);
+            fd_ = -1;
+            return true;
+        }
     };
 }
 

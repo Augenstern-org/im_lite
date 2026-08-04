@@ -111,6 +111,12 @@ namespace core {
                 }
                 break;
             }
+
+            if (!register_handler_) throw std::runtime_error("no register_handler!");
+            if (!auth_handler_) throw std::runtime_error("no auth_handler!");
+            // 目前还没写好，详见 TODO.md
+            if (!register_handler_("guest", client_fd)) continue;
+
             std::cout << "New client connected: " << client_fd << "\n";
 
             int client_flags = fcntl(client_fd, F_GETFL, 0);
@@ -168,13 +174,16 @@ namespace core {
             //     S2 已在该文件落实为注释）。
             // 本分支不再清空读缓冲：字节消费由 ok 路径的精确 erase 承担；半帧重组由 incomplete
             // 原样保留字节 + 下面的 break 出口承担（下一次 EPOLLIN 把剩余字节追加到尾部凑齐）。
-            bool fatal = false;
+            bool                                     fatal = false;
             std::vector<std::pair<MessagePack, int>> send_queue; // 每帧复用，循环体顶部先清空
             while (!in.empty()) {
                 MessagePack     rmp;
                 types::IoStatus dst = codec::Decoder::decode(in, rmp);
                 if (dst == types::IoStatus::incomplete) break; // 唯一「保留字节」的出口
-                if (dst != types::IoStatus::ok) { fatal = true; break; }
+                if (dst != types::IoStatus::ok) {
+                    fatal = true;
+                    break;
+                }
 
                 // 先推进，再派发：当且仅当 Decoder::decode 返回 IoStatus::ok 时，本帧消耗
                 // FrameHeader::wire_size + out_rmp.fh_.body_len_ 字节；其余返回值下该表达式无定义

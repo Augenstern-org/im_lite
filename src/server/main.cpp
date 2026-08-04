@@ -24,10 +24,20 @@ int main() {
         return -1;
     }
 
+    // 注册用户注册接口
+    core.set_auth_handler(
+        [](const std::string& uid) { return controller::Controller::auth(uid); }
+    );
+
+    core.set_register_handler(
+        [&controller](const std::string& uid, int fd) { return controller.register_user(uid, fd); }
+    );
+
     // 核心层只上报 fd 断开，由上层决定做什么（步 4 后此处改为驱动 UsersGroup 解绑）
     core.set_disconnect_handler(
-        [](int fd) {
+        [&controller](int fd) {
             std::cout << "Client disconnected: " << fd << std::endl;
+            controller.delete_fd(fd);
         }
     );
 

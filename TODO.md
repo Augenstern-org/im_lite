@@ -98,6 +98,7 @@
   - [ ] `§7 待定项`（`:221-226`）改为指向本文件，不再各自维护一份。
     
 - [ ] `UsersGroup` `注册fd` `删除fd` 改为多线程设计。
+- [ ] `register_handler` 暂时不能正确地将 `fd` 添加到 `uid_to_fd_` / `fd_to_uid_` 两哈希表，因为 `accept_client` 阶段不能读取 `uid`。
 
 ### 有意缺失 / 已划定的边界
 
