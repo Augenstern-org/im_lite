@@ -15,6 +15,7 @@ namespace types {
      * Opcode::ack              =>              0
      * Opcode::request          =>              1
      * Opcode::response         =>              2
+     * Opcode::login            =>              3
      *
      * Status::ok               =>              0
      * Status::fail             =>              1
@@ -26,8 +27,10 @@ namespace types {
         _init_   = 0xff,
         ack      = 0,
         request  = 1,
-        response = 2
+        response = 2,
+        login    = 3
     };
+
 
     enum class Status : std::uint8_t {
         _init_ = 0xff,
@@ -41,7 +44,8 @@ namespace types {
         switch (static_cast<Opcode>(raw)) {
             case Opcode::ack:
             case Opcode::request:
-            case Opcode::response: return true;
+            case Opcode::response:
+            case Opcode::login: return true;
             case Opcode::_init_: return false;
         }
         return false; // 不在枚举列表中的线上字节

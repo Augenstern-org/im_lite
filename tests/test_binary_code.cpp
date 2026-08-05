@@ -22,6 +22,11 @@ int main() {
     (void)raw_op;
     (void)raw_st;
 
+    // login opcode 的线上字节契约（新增枚举值必须同步扩展 is_known_opcode）
+    static_assert(static_cast<uint8_t>(types::Opcode::login) == 3, "login must be 3");
+    static_assert(types::is_known_opcode(static_cast<std::uint8_t>(types::Opcode::login)),
+                  "login must be accepted by is_known_opcode");
+
     std::cout << "test_binary_code: PASSED\n";
     return 0;
 }

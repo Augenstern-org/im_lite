@@ -124,6 +124,22 @@ int main() {
         CHECK(!g.delete_fd(1));
     }
 
+    // ── has_fd：连接级登录态判定 ─────────────────────────
+    {
+        UsersGroup ug;
+
+        // 未注册的 fd → false
+        CHECK(!ug.has_fd(11));
+
+        // 注册后 → true
+        CHECK(ug.register_user("carol", 11));
+        CHECK(ug.has_fd(11));
+
+        // 删除后 → false
+        CHECK(ug.delete_fd(11));
+        CHECK(!ug.has_fd(11));
+    }
+
     std::cout << "test_users_group: PASSED\n";
     return 0;
 }

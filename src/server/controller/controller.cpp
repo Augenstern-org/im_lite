@@ -4,6 +4,7 @@
 
 #include "server/controller/controller.h"
 
+#include <iostream>
 #include <utility>
 #include <vector>
 
@@ -27,26 +28,44 @@ namespace controller {
         std::vector<MessagePack> assembled;
         types::IoStatus          st = types::IoStatus::ok;
 
-        // Opcode 判断消息类型：req -> 返回 res（转发待跨 fd 写入落地）；ack -> 应答 ack。
-        if (rmp.fh_.opcode_ == types::Opcode::ack) {
-            st = assembler_.assemble_ack(rmp, assembled);
-        } else if (rmp.fh_.opcode_ == types::Opcode::request) {
-            // 回复消息
-            st = assembler_.assemble_response(rmp, assembled);
-
-            // 查询 fd
-            bool success = true;
-            int  to_fd   = -1;
-
-            std::string uid = rmp.msg_.to_uid_;
-
-            success = query(uid, to_fd);
-            // 转发
-            if (success) out_queue.emplace_back(rmp, to_fd);
+        if (rmp.fh_.opcode_ == types::Opcode::login) {
+            // 登录：校验凭证，成功则把 fd 绑定到 uid（architecture.md §3.4 步 2）。
+            // 绑定发生在登录时，不在 accept 时 —— accept 阶段连接匿名。
+            const Message& m = rmp.msg_;
+            const bool     ok = auth(m.from_uid_, m.content_);
+            if (ok) {
+                register_user(m.from_uid_, fd);
+            }
+            st = assembler_.assemble_login_result(rmp, ok ? types::Status::ok : types::Status::fail, assembled);
         } else {
-            // 只有服务端才会返回 res。
-            // 因此不接收 response，当前静默丢弃
-            return;
+            // 未登录连接只能发登录帧，其余一律拒绝（协议违规客户端不配得到响应）。
+            if (!users_group_.has_fd(fd)) {
+                std::cout << "[controller] reject frame (opcode=" << static_cast<int>(rmp.fh_.opcode_)
+                          << ") from unauthenticated fd " << fd << "\n";
+                return;
+            }
+
+            // Opcode 判断消息类型：req -> 返回 res（转发待跨 fd 写入落地）；ack -> 应答 ack。
+            if (rmp.fh_.opcode_ == types::Opcode::ack) {
+                st = assembler_.assemble_ack(rmp, assembled);
+            } else if (rmp.fh_.opcode_ == types::Opcode::request) {
+                // 回复消息
+                st = assembler_.assemble_response(rmp, assembled);
+
+                // 查询 fd
+                bool success = true;
+                int  to_fd   = -1;
+
+                std::string uid = rmp.msg_.to_uid_;
+
+                success = query(uid, to_fd);
+                // 转发
+                if (success) out_queue.emplace_back(rmp, to_fd);
+            } else {
+                // 只有服务端才会返回 res。
+                // 因此不接收 response，当前静默丢弃
+                return;
+            }
         }
 
         if (st != types::IoStatus::ok) {
@@ -63,9 +82,10 @@ namespace controller {
         return users_group_.query(uid, fd);
     }
 
-    bool Controller::auth(const std::string& uid) {
-        // 目前还没想好怎么校验
-        return true;
+    bool Controller::auth(const std::string& uid, const std::string& credential) const {
+        // 静态用户表查证。真实认证（数据库 / 外部鉴权）落地前先查表比对。
+        auto it = users_.find(uid);
+        return it != users_.end() && it->second == credential;
     }
 
     bool Controller::register_user(const std::string& uid, int fd) {

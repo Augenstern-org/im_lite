@@ -86,6 +86,38 @@ bool set_recv_timeout(int fd, int sec) {
     return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
 }
 
+// M1-M6 以已登录连接为前提（登录协议落地后，未登录连接发 request/ack 会被服务端拒绝）。
+// 连接建立后先发 login 帧并消耗一帧响应；返回 false 表示登录帧发送失败或未收到响应。
+bool pre_login(int fd) {
+    Message msg;
+    msg.chat_type_     = types::ChatTypes::single;
+    msg.msg_type_      = types::MessageTypes::text;
+    msg.from_uid_      = "alice";
+    msg.to_uid_        = "alice";
+    msg.client_msg_id_ = "pre-login";
+    msg.content_       = "alice123"; // 与服务端 main.cpp 演示用户表一致
+
+    std::vector<std::byte> frame;
+    if (!encode_frame(msg, types::Opcode::login, types::Status::ok, frame)) {
+        std::cerr << "[pre-login] failed to encode login frame\n";
+        return false;
+    }
+    if (!send_all(fd, frame.data(), frame.size())) {
+        std::cerr << "[pre-login] failed to send login frame\n";
+        return false;
+    }
+
+    std::byte chunk[4096];
+    const ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
+    if (n < static_cast<ssize_t>(FrameHeader::wire_size)) {
+        std::cerr << "[pre-login] no login response (closed / timeout)\n";
+        return false;
+    }
+    std::cout << "[pre-login] login response: opcode=" << static_cast<int>(chunk[0])
+              << " status=" << static_cast<int>(chunk[1]) << "\n";
+    return true;
+}
+
 // 从累积缓冲解析完整帧并打印（帧头字段 + 帧体字节，供人工比对）。
 // 帧边界按「wire_size + 4 字节大端 body_len」判定；帧体未齐则保留字节继续等。
 // count 为已解析帧总数（跨多次调用累计，帧序号据此续排）。
@@ -174,44 +206,52 @@ int recv_expect_close(int fd, std::vector<std::byte>& acc) {
 
 void usage(const char* prog) {
     std::cout
-        << "Usage: " << prog << " [--mode m1|m2|m3|m4|m5|m6]\n"
+        << "Usage: " << prog << " [--mode m1|m2|m3|m4|m5|m6|m7 [args...]]\n"
         << "  m1 (default) : 单帧回显基线\n"
         << "  m2/m3        : 一次 send() 发两个完整合法帧，期望恰好两个回显（验证 drain 无 LT stall / 粘包丢帧）\n"
         << "  m4           : 半帧（帧头 + 8B 帧体）→ 停顿 1.5s → 补齐，期望恰好一个回显（验证 incomplete 不消耗字节）\n"
         << "  m5           : 空 content_ 帧 + 合法帧一次 send()，期望连接被关\n"
         << "  m6           : 6 字节未知 opcode 帧，期望连接被杀\n"
-        << "  也可写作 --mode=m2 或直接传 m2；退出码：预期结果 → 0，异常 → 非 0\n";
+        << "  m7 <uid> <credential> : 登录：发 login 帧，按响应帧头 status 判定（ok -> 0，fail -> 1）\n"
+        << "  也可写作 --mode=m7 <uid> <credential> 或直接传 m7；退出码：预期结果 → 0，异常 → 非 0\n";
 }
 
 } // namespace
-
 int main(int argc, char* argv[]) {
     std::string mode = "m1";
-    if (argc == 2) {
+    std::string uid, credential;
+
+    if (argc >= 2) {
         const std::string arg = argv[1];
-        if (arg == "--mode") { // 缺值
-            usage(argv[0]);
-            return 2;
-        }
         if (arg == "-h" || arg == "--help") {
             usage(argv[0]);
             return 0;
         }
-        mode = arg.rfind("--mode=", 0) == 0 ? arg.substr(7) : arg;
-    } else if (argc == 3) {
-        if (std::string(argv[1]) != "--mode") {
-            usage(argv[0]);
-            return 2;
+        if (arg == "--mode") { // --mode m7 uid credential
+            if (argc < 3) {
+                usage(argv[0]);
+                return 2;
+            }
+            mode = argv[2];
+            if (argc >= 4) uid = argv[3];
+            if (argc >= 5) credential = argv[4];
+        } else if (arg.rfind("--mode=", 0) == 0) { // --mode=m7 uid credential
+            mode = arg.substr(7);
+            if (argc >= 3) uid = argv[2];
+            if (argc >= 4) credential = argv[3];
+        } else {
+            mode = arg;
         }
-        mode = argv[2];
-    } else if (argc > 3) {
-        usage(argv[0]);
-        return 2;
     }
 
     if (mode != "m1" && mode != "m2" && mode != "m3" && mode != "m4"
-        && mode != "m5" && mode != "m6") {
+        && mode != "m5" && mode != "m6" && mode != "m7") {
         std::cerr << "Unknown mode: " << mode << "\n";
+        usage(argv[0]);
+        return 2;
+    }
+    if (mode == "m7" && (uid.empty() || credential.empty())) {
+        std::cerr << "m7 requires <uid> <credential>\n";
         usage(argv[0]);
         return 2;
     }
@@ -246,10 +286,17 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+
+    // M1-M6 以已登录连接为前提；m7 本身是登录场景，不再前置登录。
+    if (mode != "m7" && !pre_login(client_fd)) {
+        std::cerr << "pre-login failed, aborting\n";
+        close(client_fd);
+        return 1;
+    }
     int result = 1;
     if (mode == "m1") {
         std::vector<std::byte> frame;
-        if (!encode_frame(make_message("Cirno", "20011229"),
+        if (!encode_frame(make_message("Cirno", "20020811"),
                           types::Opcode::request, types::Status::ok, frame)) {
             std::cerr << "Failed to encode message\n";
         } else {
@@ -263,9 +310,9 @@ int main(int argc, char* argv[]) {
         }
     } else if (mode == "m2" || mode == "m3") {
         std::vector<std::byte> f1, f2;
-        if (!encode_frame(make_message("Cirno", "20011229"),
+        if (!encode_frame(make_message("Cirno", "20020811"),
                           types::Opcode::request, types::Status::ok, f1) ||
-            !encode_frame(make_message("Daiyousei", "20011230"),
+            !encode_frame(make_message("Baka", "20260910"),
                           types::Opcode::request, types::Status::ok, f2)) {
             std::cerr << "Failed to encode message\n";
         } else {
@@ -291,7 +338,7 @@ int main(int argc, char* argv[]) {
         }
     } else if (mode == "m4") {
         std::vector<std::byte> frame;
-        if (!encode_frame(make_message("Cirno", "20011229"),
+        if (!encode_frame(make_message("Cirno", "20020811"),
                           types::Opcode::request, types::Status::ok, frame)) {
             std::cerr << "Failed to encode message\n";
         } else {
@@ -321,9 +368,9 @@ int main(int argc, char* argv[]) {
         }
     } else if (mode == "m5") {
         std::vector<std::byte> bad, good;
-        if (!encode_frame(make_message("", "20011229"),
+        if (!encode_frame(make_message("", "20020811"),
                           types::Opcode::request, types::Status::ok, bad) ||
-            !encode_frame(make_message("Cirno", "20011230"),
+            !encode_frame(make_message("Cirno", "20260910"),
                           types::Opcode::request, types::Status::ok, good)) {
             std::cerr << "Failed to encode message\n";
         } else {
@@ -341,7 +388,7 @@ int main(int argc, char* argv[]) {
                 result = recv_expect_close(client_fd, acc);
             }
         }
-    } else { // m6
+    } else if (mode == "m6") {
         std::vector<std::byte> raw = {
             std::byte{0x07}, // opcode: 未知（枚举外线上字节，is_known_opcode 拒绝）
             std::byte{0x00}, // status: ok
@@ -353,6 +400,54 @@ int main(int argc, char* argv[]) {
         } else {
             std::vector<std::byte> acc;
             result = recv_expect_close(client_fd, acc);
+        }
+    } else { // m7 登录
+        Message msg;
+        msg.chat_type_     = types::ChatTypes::single;
+        msg.msg_type_      = types::MessageTypes::text;
+        msg.from_uid_      = uid;
+        msg.to_uid_        = uid; // 登录帧 to_uid_ 无业务语义，填自身保持 is_valid()
+        msg.client_msg_id_ = "login-001";
+        msg.content_       = credential;
+
+        std::vector<std::byte> frame;
+        if (!encode_frame(msg, types::Opcode::login, types::Status::ok, frame)) {
+            std::cerr << "Failed to encode message\n";
+        } else {
+            std::cout << "[m7] sending login frame: uid=" << uid
+                      << " credential=" << credential << " (" << frame.size() << " bytes)\n";
+            if (!send_all(client_fd, frame.data(), frame.size())) {
+                std::cerr << "Failed to send\n";
+            } else {
+                std::byte chunk[4096];
+                const ssize_t n = recv(client_fd, chunk, sizeof(chunk), 0);
+                if (n >= static_cast<ssize_t>(FrameHeader::wire_size)) {
+                    const auto op = static_cast<std::uint8_t>(chunk[0]);
+                    const auto st = static_cast<std::uint8_t>(chunk[1]);
+                    std::uint32_t body_len = 0;
+                    std::memcpy(&body_len, chunk + 2, sizeof(body_len));
+                    body_len = ntohl(body_len);
+                    // 只打印已实际到达的帧体字节，防声明长度超出本次 recv 越界读。
+                    const std::size_t got_body =
+                        static_cast<std::size_t>(n) - FrameHeader::wire_size;
+                    const std::size_t print_body = body_len < got_body ? body_len : got_body;
+                    std::cout << "[m7] login response: opcode=" << static_cast<int>(op)
+                              << " status=" << static_cast<int>(st)
+                              << " body_len=" << body_len << " body=";
+                    std::cout.write(
+                        reinterpret_cast<const char*>(chunk + FrameHeader::wire_size), print_body);
+                    std::cout << std::endl;
+                    if (op == static_cast<std::uint8_t>(types::Opcode::response)) {
+                        result = (st == static_cast<std::uint8_t>(types::Status::ok)) ? 0 : 1;
+                    }
+                } else if (n == 0) {
+                    std::cout << "[m7] connection closed by peer before login response\n";
+                } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    std::cout << "[m7] recv timeout waiting for login response\n";
+                } else {
+                    std::cout << "[m7] recv error: " << std::strerror(errno) << "\n";
+                }
+            }
         }
     }
 

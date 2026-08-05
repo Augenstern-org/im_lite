@@ -116,6 +116,26 @@ int main() {
         CHECK(out[0].is_valid());
     }
 
+    // ── assemble_login_result: opcode 变 response、status 由调用方定 ──
+    {
+        Assembler a;
+        MessagePack req = make_request_msg();
+
+        std::vector<MessagePack> out_ok;
+        CHECK(a.assemble_login_result(req, Status::ok, out_ok) == IoStatus::ok);
+        CHECK(out_ok.size() == 1);
+        CHECK(out_ok[0].fh_.opcode_ == Opcode::response);
+        CHECK(out_ok[0].fh_.status_ == Status::ok);
+        CHECK(out_ok[0].msg_.from_uid_ == "alice"); // 帧体回显入站
+        CHECK(out_ok[0].is_valid());
+
+        std::vector<MessagePack> out_fail;
+        CHECK(a.assemble_login_result(req, Status::fail, out_fail) == IoStatus::ok);
+        CHECK(out_fail.size() == 1);
+        CHECK(out_fail[0].fh_.opcode_ == Opcode::response);
+        CHECK(out_fail[0].fh_.status_ == Status::fail);
+    }
+
     std::cout << "test_assembler: PASSED\n";
     return 0;
 }

@@ -48,10 +48,14 @@
 - [ ] **`ResponseMsg::server_seq_` 的去向** `docs/architecture.md:229`
   随消息模型塌缩去掉，尚未确定以何种形式回归：`Message` 的可选字段，还是移进帧头。
 
-- [ ] **登录 / 握手协议** `docs/architecture.md:227`
-  > `register_handler` 已接线（`core.cpp:118`，当前 hardcode `"guest"`），
-  > `auth_handler` 已声明但校验逻辑仍是恒返回 `true` 的占位（`controller.cpp:66-69`）。
-  uid ↔ fd 绑定发生在登录时，但登录指令的具体形态（认证方式、`msg_type_` 取值）尚未定义。
+- [x] **登录 / 握手协议** `docs/architecture.md:227`
+  > 2026-08-05 落地：新增 `Opcode::login`（线上字节 3，`src/common/binary_code.h`），登录帧复用
+  > `Message` 结构（`from_uid_` = 待登录 uid，`content_` = 凭证，`to_uid_` 填自身过 `is_valid` 闸）。
+  > `Controller` 构造注入静态用户表（uid → 凭证，`main.cpp` 演示表），`auth(uid, credential)` 查表比对；
+  > 成功 `register_user(uid, fd)` 绑定并回 `response(ok)`，失败回 `response(fail)` 且连接保留可重试。
+  > accept 阶段不再注册任何 uid（`core.cpp` 原 `register_handler_("guest", …)` 删除，§3.4 步 2 兑现）；
+  > 未登录连接发非登录帧一律拒绝并记日志（`controller.cpp` login 分支）。`core` 的
+  > `auth_handler_` / `register_handler_` 回调随登录驱动归协调层而退役（8/4 日志 §4.5 同步消除）。
 
 - [ ] **分帧状态机** `src/common/decoder.h:25`
   范围说明（2026-08-03 改写）：本条现在**只为流式增量解析（性能议题）存在**——不把整帧攒在
@@ -76,7 +80,9 @@
     绑死，与「复用缓冲归调用方持有」的现有边界相冲，得连带重新划线。
 
 - [ ] **调试观测点缺失** `src/server/controller/controller.cpp`
-  原先打印 `from_uid_` / `content_` 的两行已删，服务端现在对收到的消息没有任何输出，
+  > 2026-08-05 部分补齐：登录协议落地时补了「未登录连接被拒」日志（opcode + fd，login 分支），
+  > 普通消息路径（转发 / 回显 / 丢弃）仍无输出，本条保留。
+  原先打印 `from_uid_` / `content_` 的两行已删，服务端对收到的普通消息没有任何输出，
   端到端联调只能靠客户端侧的回显判断。
 
 - [ ] **`docs/architecture.md` 与代码漂移**
@@ -97,7 +103,12 @@
   - [x] `§7 待定项`（`:221-226`）改为指向本文件，不再各自维护一份。→ 2026-08-04 已添加指向。
 
 - [ ] `UsersGroup` `注册fd` `删除fd` 改为多线程设计。
-- [ ] `register_handler` 暂时不能正确地将 `fd` 添加到 `uid_to_fd_` / `fd_to_uid_` 两哈希表，因为 `accept_client` 阶段不能读取 `uid`。
+- [x] `register_handler` 暂时不能正确地将 `fd` 添加到 `uid_to_fd_` / `fd_to_uid_` 两哈希表，因为 `accept_client` 阶段不能读取 `uid`。
+  > 2026-08-05 随登录协议落地而消除：accept 阶段不再注册，绑定改在登录帧处理时
+  > （`controller.cpp` login 分支 `register_user(m.from_uid_, fd)`）。
+
+- [ ] **登录防爆破**：登录失败当前无次数限制（2026-08-05 决策「fail 可重试」，连接可无限重试）。
+  后续做次数限制 / 拉黑（连续 N 次失败关连接或封禁）。`controller.cpp` login 分支。
 
 ### 有意缺失 / 已划定的边界
 

@@ -31,14 +31,9 @@ namespace core {
             std::vector<std::pair<MessagePack, int>>& out_queue
         )>;
         using disconnect_handler = std::function<void(int fd)>;
-        using auth_handler       = std::function<bool(const std::string& uid)>;
-        using register_handler   = std::function<bool(const std::string& uid, int fd)>;
 
         void set_message_handler(message_handler h) noexcept { message_handler_ = std::move(h); }
         void set_disconnect_handler(disconnect_handler h) noexcept { disconnect_handler_ = std::move(h); }
-        void set_auth_handler(auth_handler h) noexcept { auth_handler_ = std::move(h); }
-        void set_register_handler(register_handler h) noexcept { register_handler_ = std::move(h); }
-
     private:
         void handle_accept();
         void handle_client(int fd, uint32_t events);
@@ -56,8 +51,6 @@ namespace core {
         std::vector<int>                     pending_close_;
         message_handler                      message_handler_;
         disconnect_handler                   disconnect_handler_;
-        auth_handler                         auth_handler_;
-        register_handler                     register_handler_;
         // 出站编码的复用缓冲：跨消息、跨连接共用一块，由 Encoder::encode() 按需增长（只增不减）。
         std::vector<std::byte>               encode_buf_;
     };

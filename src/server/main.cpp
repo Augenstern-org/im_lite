@@ -17,30 +17,26 @@ int main() {
     coordination::Assembler  assembler;
     coordination::UsersGroup users_group;
 
-    controller::Controller controller(assembler, users_group);
+    // 演示用户表：uid -> 登录凭证。真实认证（数据库 / 外部鉴权）落地前先静态查表。
+    const controller::Controller::UserTable users = {
+        {"alice", "alice123"},
+        {"bob",   "bob456"},
+    };
+
+    controller::Controller controller(assembler, users_group, users);
 
     core::Core core(7891, 2);
     if (!core.init()) {
         return -1;
     }
 
-    // 注册用户注册接口
-    core.set_auth_handler(
-        [](const std::string& uid) { return controller::Controller::auth(uid); }
-    );
-
-    core.set_register_handler(
-        [&controller](const std::string& uid, int fd) { return controller.register_user(uid, fd); }
-    );
-
-    // 核心层只上报 fd 断开，由上层决定做什么（步 4 后此处改为驱动 UsersGroup 解绑）
+    // 核心层只上报 fd 断开，由上层决定做什么（断开即从用户组解绑，防 fd 复用串消息）。
     core.set_disconnect_handler(
         [&controller](int fd) {
             std::cout << "Client disconnected: " << fd << std::endl;
             controller.delete_fd(fd);
         }
     );
-
     // 注册消息处理接口
     core.set_message_handler(
         [&controller](int fd, const MessagePack& in, std::vector<std::pair<MessagePack, int>>& out_queue) {

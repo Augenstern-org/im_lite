@@ -112,11 +112,8 @@ namespace core {
                 break;
             }
 
-            if (!register_handler_) throw std::runtime_error("no register_handler!");
-            if (!auth_handler_) throw std::runtime_error("no auth_handler!");
-            // 目前还没写好，详见 TODO.md
-            if (!register_handler_("guest", client_fd)) continue;
-
+            // 登录绑定发生在协调层收到登录帧时（architecture.md §3.4 步 2），
+            // accept 阶段连接匿名，不注册任何 uid。
             std::cout << "New client connected: " << client_fd << "\n";
 
             int client_flags = fcntl(client_fd, F_GETFL, 0);

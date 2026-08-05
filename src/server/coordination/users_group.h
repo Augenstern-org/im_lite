@@ -62,6 +62,11 @@ namespace coordination {
             return true;
         }
 
+
+        bool has_fd(int fd) const {
+            // 连接级登录态判定：fd 在双向映射中即已登录（architecture.md §3.4 步 2）。
+            return fd_to_uid_.find(fd) != fd_to_uid_.end();
+        }
         bool query(const std::string& uid, int& fd) const {
             // 无用户
             auto find = uid_to_fd_.find(uid);

@@ -208,7 +208,7 @@ namespace {
     // D13 —— 全部合法组合都必须放行，且 opcode / status 不得互换
     // ---------------------------------------------------------------------
     void decode_accepts_all_known_opcodes() {
-        const std::uint8_t ops[3] = {0x00, 0x01, 0x02};
+        const std::uint8_t ops[4] = {0x00, 0x01, 0x02, 0x03};
         const std::uint8_t sts[2] = {0x00, 0x01};
 
         for (const std::uint8_t op : ops) {

@@ -15,7 +15,7 @@ namespace coordination {
     // 装配器：只负责把出站 MessagePack 装配出来，不决定它们送到哪个 fd。
     // 签名里没有 fd、也不持有 UsersGroup —— 路由（to_uid_ -> fd 集合）是独立的、
     // 尚未落地的职责。跨 fd 写入实现之前（core.cpp:183），
-    // 产出指向其它 fd 的帧会导致误投；装配器无法表达 fd，该错误因此不可发生。
+    // 产出指向其它 fd 的帧会导致误投；装配器无法表达 fd，该错误因此不可发生。Z}
     class Assembler {
     public:
         Assembler()  = default;
@@ -43,6 +43,17 @@ namespace coordination {
             // 帧头有意保持入站原样（迁移前即如此），不强制改写 opcode / status。
             ack.msg_.content_ = '\x01';
             out.push_back(std::move(ack));
+            return types::IoStatus::ok;
+        }
+
+        // 登录结果帧：对入站 login 帧的应答。status 由调用方定
+        // （ok = 登录成功 / fail = 凭证错误或未知用户），帧体原样回显入站 Message
+        // （客户端凭帧头 status 判断结果，凭帧体核对 uid）。
+        types::IoStatus assemble_login_result(const MessagePack& in, types::Status st, std::vector<MessagePack>& out) {
+            MessagePack res = in;
+            res.fh_.opcode_ = types::Opcode::response;
+            res.fh_.status_ = st;
+            out.push_back(std::move(res));
             return types::IoStatus::ok;
         }
     };

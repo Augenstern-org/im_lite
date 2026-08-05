@@ -28,6 +28,19 @@ static MessagePack make_request(const std::string& to_uid, const std::string& co
     return MessagePack(fh, std::move(msg));
 }
 
+static MessagePack make_login(const std::string& uid, const std::string& credential) {
+    Message msg;
+    msg.chat_type_     = types::ChatTypes::single;
+    msg.msg_type_      = types::MessageTypes::text;
+    msg.from_uid_      = uid;
+    msg.to_uid_        = uid; // 登录帧 to_uid_ 无业务语义，填自身保持 is_valid()
+    msg.client_msg_id_ = "login-001";
+    msg.content_       = credential;
+
+    FrameHeader fh(types::Opcode::login, types::Status::ok);
+    return MessagePack(fh, std::move(msg));
+}
+
 static MessagePack make_ack() {
     Message msg;
     msg.chat_type_     = types::ChatTypes::single;
@@ -62,10 +75,19 @@ int main() {
     using types::Opcode;
     using types::Status;
 
-    // ── auth: 目前总是返回 true ──────────────────────────
+    // ── auth: 静态用户表校验 ─────────────────────────────
     {
-        CHECK(Controller::auth("anyone"));
-        CHECK(Controller::auth(""));
+        Assembler  asm_;
+        UsersGroup ug;
+        const Controller::UserTable users = {{"alice", "alice123"}};
+        Controller ctrl(asm_, ug, users);
+
+        // 凭证正确
+        CHECK(ctrl.auth("alice", "alice123"));
+        // 凭证错误
+        CHECK(!ctrl.auth("alice", "wrong"));
+        // 未知用户
+        CHECK(!ctrl.auth("nobody", "anything"));
     }
 
     // ── register_user → query 闭环 ───────────────────────
@@ -112,6 +134,8 @@ int main() {
 
         // 先注册目标用户，否则转发不会触发
         CHECK(ctrl.register_user("receiver", 99));
+        // 发送方 fd 需已登录（未登录连接只收登录帧），这里直接注册模拟已登录
+        CHECK(ctrl.register_user("sender", 42));
 
         MessagePack                            req = make_request("receiver");
         std::vector<std::pair<MessagePack, int>> out_queue;
@@ -139,6 +163,8 @@ int main() {
         UsersGroup ug;
         Controller ctrl(asm_, ug);
 
+        // 发送方 fd 需已登录（未登录连接只收登录帧），这里直接注册模拟已登录
+        CHECK(ctrl.register_user("sender", 42));
         MessagePack                            req = make_request("notfound");
         std::vector<std::pair<MessagePack, int>> out_queue;
 
@@ -156,6 +182,8 @@ int main() {
         UsersGroup ug;
         Controller ctrl(asm_, ug);
 
+        // 发送方 fd 需已登录（未登录连接只收登录帧），这里直接注册模拟已登录
+        CHECK(ctrl.register_user("sender", 42));
         MessagePack                            ack_in = make_ack();
         std::vector<std::pair<MessagePack, int>> out_queue;
 
@@ -168,11 +196,13 @@ int main() {
         CHECK(static_cast<unsigned char>(out_queue[0].first.msg_.content_[0]) == 0x01);
     }
 
-    // ── process: response opcode → 静默丢弃 ──────────────
+    // ── process: 已登录连接发 response opcode → 静默丢弃 ─
     {
         Assembler  asm_;
         UsersGroup ug;
         Controller ctrl(asm_, ug);
+
+        CHECK(ctrl.register_user("sender", 42));
 
         MessagePack                            res = make_response_msg();
         std::vector<std::pair<MessagePack, int>> out_queue;
@@ -194,6 +224,63 @@ int main() {
         ctrl.process(42, invalid, out_queue);
 
         CHECK(out_queue.empty());
+    }
+
+    // ── process: login 成功 → response(ok) + uid 绑定 ────
+    {
+        Assembler  asm_;
+        UsersGroup ug;
+        const Controller::UserTable users = {{"alice", "alice123"}};
+        Controller ctrl(asm_, ug, users);
+
+        MessagePack                            login = make_login("alice", "alice123");
+        std::vector<std::pair<MessagePack, int>> out_queue;
+
+        ctrl.process(42, login, out_queue);
+
+        CHECK(out_queue.size() == 1);
+        CHECK(out_queue[0].second == 42);
+        CHECK(out_queue[0].first.fh_.opcode_ == Opcode::response);
+        CHECK(out_queue[0].first.fh_.status_ == Status::ok);
+
+        // fd 已绑定：has_fd 通过，query 可查
+        CHECK(ug.has_fd(42));
+        int fd = -1;
+        CHECK(ctrl.query("alice", fd));
+        CHECK(fd == 42);
+    }
+
+    // ── process: login 失败（凭证错）→ response(fail)、不绑定 ──
+    {
+        Assembler  asm_;
+        UsersGroup ug;
+        const Controller::UserTable users = {{"alice", "alice123"}};
+        Controller ctrl(asm_, ug, users);
+
+        MessagePack                            login = make_login("alice", "wrong");
+        std::vector<std::pair<MessagePack, int>> out_queue;
+
+        ctrl.process(42, login, out_queue);
+
+        CHECK(out_queue.size() == 1);
+        CHECK(out_queue[0].first.fh_.opcode_ == Opcode::response);
+        CHECK(out_queue[0].first.fh_.status_ == Status::fail);
+        CHECK(!ug.has_fd(42)); // 未绑定
+    }
+
+    // ── process: 未登录连接发 request → 拒绝 ──────────────
+    {
+        Assembler  asm_;
+        UsersGroup ug;
+        Controller ctrl(asm_, ug); // 空用户表，任何登录都失败
+
+        MessagePack                            req = make_request("receiver");
+        std::vector<std::pair<MessagePack, int>> out_queue;
+
+        ctrl.process(42, req, out_queue);
+
+        CHECK(out_queue.empty());
+        CHECK(!ug.has_fd(42));
     }
 
     std::cout << "test_controller: PASSED\n";

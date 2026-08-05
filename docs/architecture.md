@@ -196,13 +196,13 @@ fd 会被操作系统回收复用，这是即时通信服务端最典型的串�
 1. ✅ **抽出 socket + epoll 装配**：把 `main.cpp` 中的监听 socket 创建与 epoll 循环搬入核心层。`main()` 收敛为"构建核心层 → 运行"。这是最机械、最安全的一刀。
 2. ✅ **每条客户端连接对象化**：以连接对象（持有 fd 与读 / 写缓冲）替代原型中裸 `buf` 与"发完不管"的 `send`。读写返回接入 `IoStatus`。此步同时修正原型中"写返回 `EAGAIN` 时静默丢数据"的问题。
 3. 🚧 **插入编解码（帧切分）**：在核心层读缓冲的字节与 `Message` 之间加入分帧，采用固定头 + 可变体的帧结构（见 §2.4）。编解码器本身已完成并有黄金字节测试兜底；**粘包 / 拆包已通过 `IoStatus::incomplete` + drain 循环落地**——`Decoder::decode()` 在帧头/帧体未齐时返回 `incomplete`（`decoder.h:32, :55`），`core.cpp:179-186` 的 drain 循环保留半帧字节等待下一次 `EPOLLIN` 补齐，超长帧走 `frame_too_long` → `fatal` → 关连接。仍未落地的是**流式增量解析**（性能优化——不把整帧字节攒在 `read_buf_` 里就能推进解析；详见 `TODO.md`「分帧状态机」条）。
-4. 🚧 **落业务与用户组**：协调层（含用户组）承接完整流程，控制层承接入口校验与派发。**接线已完成**：`Core` 通过回调注册（`set_message_handler` / `set_disconnect_handler` / `set_register_handler` / `set_auth_handler`），签名为
+4. 🚧 **落业务与用户组**：协调层（含用户组）承接完整流程，控制层承接入口校验与派发。**接线已完成**：`Core` 通过回调注册（`set_message_handler` / `set_disconnect_handler`），签名为
 
    ```cpp
    std::function<void(int fd, const MessagePack& in, std::vector<std::pair<MessagePack, int>>& out_queue)>
    ```
 
-   出参取 `(MessagePack, fd)` 对而非单个返回值，因为一条入站消息可能产生多条出站帧（转发的 request 与回给发送方的 response 是两条独立的帧，各自目标 fd 可能不同）。核心层不再自造消息，只负责搬运。**已完成**：`Controller::process()` 按 opcode 三路分派——`request` → `assemble_response` + 查 `UsersGroup::query` 转发到目标 fd；`ack` → `assemble_ack` 应答；`response` → 静默丢弃。`register_handler` 已接线（当前 hardcode `"guest"`，登录协议落地前所有连接共享同一 uid）。**尚未完成**：`auth_handler` 已声明但校验逻辑仍是恒返回 `true` 的占位；EPOLLOUT 武装、`pending_close_` 排除两子项随跨 fd 转发部分落地而暴露，仍待解决（见 `TODO.md` 第 1 条）。
+   出参取 `(MessagePack, fd)` 对而非单个返回值，因为一条入站消息可能产生多条出站帧（转发的 request 与回给发送方的 response 是两条独立的帧，各自目标 fd 可能不同）。核心层不再自造消息，只负责搬运。**已完成**：`Controller::process()` 按 opcode 分派——`login` → `auth(uid, credential)` 查静态用户表（`Controller` 构造注入，`main.cpp` 演示表）→ 成功 `register_user(uid, fd)` 绑定并回 `response(ok)`，失败回 `response(fail)` 且连接保留可重试；`request` → `assemble_response` + 查 `UsersGroup::query` 转发到目标 fd；`ack` → `assemble_ack` 应答；`response` → 静默丢弃。**登录协议 2026-08-05 落地**：新增 `Opcode::login`（线上字节 3，`binary_code.h`）；accept 阶段不再注册任何 uid（§3.4 步 2「绑定发生在登录时」兑现）；未登录连接发非登录帧一律拒绝并记日志；`set_auth_handler` / `set_register_handler` 两个回调随登录驱动归协调层而退役。**尚未完成**：EPOLLOUT 武装、`pending_close_` 排除两子项随跨 fd 转发部分落地而暴露，仍待解决（见 `TODO.md` 第 1 条）。
 
 ## 6. 验证
 
