@@ -34,7 +34,8 @@ namespace controller {
         Controller& operator=(const Controller&) = delete;
 
         bool auth(const std::string& uid, const std::string& credential) const;
-        bool register_user(const std::string& uid, int fd);
+        // 三态透传：绑定成功 / 幂等重复 / fd 已属于另一个 uid（详见 RegisterResult）
+        coordination::RegisterResult register_user(const std::string& uid, int fd);
         bool delete_fd(int fd);
 
         void process(int fd, const MessagePack& rmp, std::vector<std::pair<MessagePack, int>>& out_queue);

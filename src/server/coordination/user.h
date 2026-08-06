@@ -30,15 +30,13 @@ namespace coordination {
         //     return true;
         // }
 
-        bool get_fd(int& fd, int device_id = -1) const {
-            // 目前仅支持单用户单fd
-            // 启用多fd之后需查询具体使用什么fd(根据设备id)
+        // 取该用户当前可用的 fd（最早注册且仍在线的那个）。
+        // 目前投递面向连接而非设备，调用方不需要指定设备；多设备扇出落地时需要的是
+        // get_fds(std::vector<int>&)，而不是 device_id 标量 —— 保留一个没有调用方
+        // 能有意义传入的参数，只会把「分支为空却返回 true」这类契约违规留在原地。
+        bool get_fd(int& fd) const {
             if (fds_.empty()) return false;
-            if (device_id == -1) {
-                fd = fds_[0];
-                return true;
-            }
-            // 其他查找逻辑
+            fd = fds_[0];
             return true;
         }
 
@@ -47,6 +45,11 @@ namespace coordination {
         }
 
         std::vector<int>& vec() {
+            return fds_;
+        }
+
+        // 只读重载：供 UsersGroup 的不变式校验等 const 场景使用
+        const std::vector<int>& vec() const {
             return fds_;
         }
 

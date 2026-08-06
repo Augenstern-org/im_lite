@@ -38,6 +38,9 @@ namespace core {
         void handle_accept();
         void handle_client(int fd, uint32_t events);
         void close_client(int fd);
+        // fd 是否已被判死但尚未销毁：close_client() 只做 EPOLL_CTL_DEL + 入队，
+        // conns_ 里的元素要到 drain_pending_close() 才 erase，故 conns_.find() 仍会命中。
+        [[nodiscard]] bool is_pending_close(int fd) const noexcept;
 
         void update_events(int fd, const Connections& conn);
         void drain_pending_close();

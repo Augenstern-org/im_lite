@@ -24,11 +24,16 @@ namespace coordination {
         // 把入站 request 的响应帧追加进 out。只追加，不清空 out。
         // 前置条件：in.is_valid() 为真（调用方保证）。
         // 返回 ok = 装配成功、已追加 0 或多条；error = 装配失败、out 一条未追加。
-        types::IoStatus assemble_response(const MessagePack& in, std::vector<MessagePack>& out) {
+        //
+        // status 由调用方定（ok = 已路由至目标 / fail = 目标不在线，无处投递），与
+        // assemble_login_result 对称。有意不给默认值：默认 ok 等价于保留「无论路由
+        // 结果如何都回 ok」的旧行为，而那正是本参数要修的缺陷。
+        // 这里收的是 status 而非 fd —— 装配器仍然对 fd 无感知，路由不是它的职责（见类注释）。
+        types::IoStatus assemble_response(const MessagePack& in, types::Status st, std::vector<MessagePack>& out) {
             MessagePack res = in;
             // 请求 / 响应由帧头 opcode 承载，不由类型区分（docs/architecture.md §2.5）。
             res.fh_.opcode_ = types::Opcode::response;
-            res.fh_.status_ = types::Status::ok;
+            res.fh_.status_ = st;
             // body_len_ 由 codec::Encoder::encode 回写，此处不预置。
             // 帧体当前是入站 Message 的原样复制 —— 真正该带的服务端序号见 TODO.md。
             out.push_back(std::move(res));

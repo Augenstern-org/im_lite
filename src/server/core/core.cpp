@@ -87,14 +87,9 @@ namespace core {
                     handle_accept();
                     continue;
                 }
-                bool skip = false;
-                for (int pending : pending_close_) {
-                    if (pending == fd) {
-                        skip = true;
-                        break;
-                    }
-                }
-                if (!skip) {
+                // 同一批次里更早的事件（或更早那个 fd 的出队循环）可能已经判了本 fd 死刑，
+                // 此时它已被摘出 epoll、只等 drain_pending_close() 销毁，不该再喂事件。
+                if (!is_pending_close(fd)) {
                     handle_client(fd, events[i].events);
                 }
             }
@@ -159,11 +154,22 @@ namespace core {
             // (a) 必须 drain 到 incomplete，不设帧数上限。全仓无 EPOLLET（LT），on_readable 已把
             //     内核接收缓冲抽干到 EAGAIN；若只解一帧就退出，用户态 in 里的第二帧等不到新的
             //     EPOLLIN，会一直 stall 到对端再发字节。唯一的量化闸是 kReadSoftCap 64KiB。
-            // (b) erase 必须先于 message_handler_。main.cpp:39-43 的 try/catch 包着整个 run()，
+            // (b) erase 必须先于 message_handler_。main.cpp:47-51 的 try/catch 包着整个 run()，
             //     handler 抛异常会栈展开出 handle_client；游标先推进则毒帧已出局，后推进就是
             //     下次再解同一帧再抛，构成 livelock。
-            // (c) 循环体内 close_client 调用点为 0，所有杀决策只写 fatal = true; break;，
-            //     EPOLLIN 分支收敛成恰好一个 close_client(fd); return;（全函数 6 处 → 3 处）。
+            // (c) 循环体内针对**入站 fd** 的 close_client 调用点为 0：所有「杀入站」的决策只写
+            //     fatal = true; break;，EPOLLIN 分支收敛成恰好一个 close_client(fd); return;。
+            //     承重用途是 conn —— :131 绑定的 conns_ 元素引用要一路活到 :267 的
+            //     update_events(fd, conn)；入站 fd 只有一个杀点、且那个杀点紧跟 return，引用不可能悬垂。
+            //     2026-08-06 有意收窄（D3）：本不变式从「0 个 close_client」缩到「0 个针对入站 fd 的
+            //     close_client」。出队循环现在允许对**其他 fd** 调用 close_client —— 写目标失败该杀的是
+            //     目标，杀入站的发送方是错误归因，且会把真正已死的目标留着。收窄之所以安全，前提是
+            //     close_client() 只做 EPOLL_CTL_DEL + pending_close_.push_back，**不动 conns_**；
+            //     真正的 conns_.erase 推迟到批次末尾 run():96 的 drain_pending_close()。因此循环体内
+            //     杀别的 fd 既不使 conn 失效，也不使 conns_ 的迭代器 / 引用失效。
+            //     唯一的例外是自发自收（to_uid_ == from_uid_ ⇒ to_fd == fd，目标就是入站连接）：
+            //     该情形不走 close_client(to_fd)，显式回落成 fatal = true; break;，仍然只经由那个
+            //     唯一的入站杀点。close_client() 本身另有幂等护栏（:293），两者互不替代。
             // (d) 不加读缓冲上限，恒界可推导：drain 退出时 in 中只剩一个未完成帧（< 6 字节，
             //     或 wire_size + k 且 k < body_len ≤ 65530）⇒ 残留 ≤ 65535；on_readable 每轮
             //     append ≤ 4096 且 size() >= 65536 即返回 ⇒ read_buf_ ≤ 69631 字节恒成立。
@@ -198,27 +204,54 @@ namespace core {
                 // encode_buf_ 跨消息、跨连接复用，由 encode() 按需增长（只增不减）；
                 // conn.send() 会把数据拷进 write_buf_，因此编码缓冲的生命周期在 send() 返回时即结束，
                 // 下一轮可以直接覆写。只有 [0, out_len) 会被发送，上一条消息留在尾部的残留字节永不上线。
+                // 三种失败模式、三种处置，归因各不相同（D3）。共同的硬约束：除自发自收外
+                // 一律 continue，绝不 break —— 发送方自己的回执由 controller 排在转发**之后**
+                // （controller.cpp:78 先入转发，:95-97 再入 assembled），一条转发失败就 break
+                // 会把回执一并吞掉，发送方无声地收不到自己的 response。
                 for (auto& item : send_queue) {
-                    // 查询 conn
-                    auto to_it = conns_.find(item.second);
-                    if (to_it == conns_.end()) {
-                        fatal = true;
-                        break;
+                    const int to_fd = item.second;
+
+                    // 失败①：目标不在 conns_，或已排入 pending_close_。后者是本轮新增的承重排除项：
+                    // close_client() 推迟 erase（见 (c)），conns_.find(to_fd) 仍会命中一个已被摘出
+                    // epoll、只等销毁的连接，写进去的字节永远上不了线。
+                    // 处置：只记日志。发送方无过错，杀谁都是错误归因。
+                    auto to_it = conns_.find(to_fd);
+                    if (to_it == conns_.end() || is_pending_close(to_fd)) {
+                        std::cerr << "[core] drop out-queue entry for fd " << to_fd
+                                  << ": target gone or pending close\n";
+                        continue;
                     }
                     Connections& to_conn = to_it->second;
 
                     // 编码
                     uint32_t        out_len = 0;
                     types::IoStatus est     = codec::Encoder::encode(item.first, encode_buf_, out_len);
+                    // 失败②：编码失败。encode() 的出错后置条件（encoder.h:67-69）保证 out_buf
+                    // 一字节未动，半帧不可能已经上线，两端的字节流都没被污染。
+                    // 处置：谁都不杀，只丢这一条。
                     if (est != types::IoStatus::ok) {
-                        fatal = true;
-                        break;
+                        std::cerr << "[core] drop out-queue entry for fd " << to_fd
+                                  << ": encode failed (" << types::to_string(est) << ")\n";
+                        continue;
                     }
 
                     types::IoStatus wst = to_conn.send(reinterpret_cast<const char*>(encode_buf_.data()), out_len);
+                    // 失败③：写目标失败（对端已关，或写缓冲越过 kWriteHighWater，
+                    // connections.cpp:66-67）。这笔账记在**目标**头上，杀的必须是目标。
                     if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {
-                        fatal = true;
-                        break;
+                        if (to_fd == fd) {
+                            // 自发自收：目标即入站连接，「杀目标」与「杀入站」是同一件事，
+                            // 必须回到 :260 那个唯一的入站杀点，否则 conn 会在 update_events 处悬垂。
+                            std::cerr << "[core] send to self fd " << fd << " failed ("
+                                      << types::to_string(wst) << ")\n";
+                            fatal = true;
+                            break;
+                        }
+                        std::cerr << "[core] send to fd " << to_fd << " failed ("
+                                  << types::to_string(wst) << "); closing target, sender fd " << fd
+                                  << " unaffected\n";
+                        close_client(to_fd);
+                        continue;
                     }
                 }
                 if (fatal) break;
@@ -252,9 +285,28 @@ namespace core {
 
     // 延迟销毁
     void Core::close_client(int fd) {
+        // 幂等，不是防御性冗余：同一 fd 重复入队会让 drain_pending_close() 对它触发**两次**
+        // disconnect_handler_，也就是两次 UsersGroup::delete_fd —— 第二次作用在一个 fd 号可能
+        // 已被新连接复用的槽位上，会把别人的绑定解掉。自发自收（to_uid_ == from_uid_ ⇒
+        // to_fd == fd）正是「杀目标」与「杀入站」两条杀路收敛到同一个 fd 的地方；唯一性从此
+        // 由本函数保证，而不是靠每个调用点各自做情形分析。
+        if (is_pending_close(fd)) {
+            return;
+        }
         // EPOLL_CTL_DEL 必须早于 close()，且 close() 交由 Connections 析构在 erase 时完成
         epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
         pending_close_.push_back(fd);
+    }
+
+    // pending_close_ 至多容纳一个 epoll 批次内的关闭决策（≤ 64），线性扫描即可，
+    // 无需为它另建集合。语义：已判死、已摘出 epoll，但 conns_ 中的元素尚未 erase。
+    bool Core::is_pending_close(int fd) const noexcept {
+        for (int pending : pending_close_) {
+            if (pending == fd) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // 延迟销毁
