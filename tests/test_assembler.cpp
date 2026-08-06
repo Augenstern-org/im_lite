@@ -51,7 +51,7 @@ int main() {
         MessagePack       req = make_request_msg();
         std::vector<MessagePack> out;
 
-        IoStatus st = a.assemble_response(req, out);
+        IoStatus st = a.assemble_response(req, Status::ok, out);
         CHECK(st == IoStatus::ok);
         CHECK(out.size() == 1);
         CHECK(out[0].fh_.opcode_ == Opcode::response);
@@ -84,10 +84,10 @@ int main() {
         std::vector<MessagePack> out;
 
         MessagePack req = make_request_msg();
-        CHECK(a.assemble_response(req, out) == IoStatus::ok);
+        CHECK(a.assemble_response(req, Status::ok, out) == IoStatus::ok);
         CHECK(out.size() == 1);
 
-        CHECK(a.assemble_response(req, out) == IoStatus::ok);
+        CHECK(a.assemble_response(req, Status::ok, out) == IoStatus::ok);
         CHECK(out.size() == 2);
     }
 
@@ -98,7 +98,7 @@ int main() {
         Opcode orig_opcode = req.fh_.opcode_;
 
         std::vector<MessagePack> out;
-        a.assemble_response(req, out);
+        a.assemble_response(req, Status::ok, out);
 
         // 入站对象被移动后处于未指定状态；此测试改为验证出站对象
         // 实际上 assemble_response 内部做了 `MessagePack res = in;` 的拷贝，
@@ -112,7 +112,26 @@ int main() {
         MessagePack req = make_request_msg();
         std::vector<MessagePack> out;
 
-        a.assemble_response(req, out);
+        a.assemble_response(req, Status::ok, out);
+        CHECK(out[0].is_valid());
+    }
+
+    // ── assemble_response: status 由调用方定，fail 必须原样落到帧头 ──
+    // 其余用例一律传 ok，无法区分「st 被采纳」与「st 被忽略、内部仍恒置 ok」——
+    // 而后者正是本次要修的缺陷。这条是该行为的唯一回归防线。
+    {
+        Assembler a;
+        MessagePack req = make_request_msg();
+        std::vector<MessagePack> out;
+
+        CHECK(a.assemble_response(req, Status::fail, out) == IoStatus::ok);
+        CHECK(out.size() == 1);
+        CHECK(out[0].fh_.opcode_ == Opcode::response);
+        CHECK(out[0].fh_.status_ == Status::fail);
+        // 帧体仍原样回显，status 只改帧头
+        CHECK(out[0].msg_.from_uid_ == "alice");
+        CHECK(out[0].msg_.to_uid_ == "bob");
+        CHECK(out[0].msg_.content_ == "hello");
         CHECK(out[0].is_valid());
     }
 

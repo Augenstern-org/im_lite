@@ -70,6 +70,7 @@ static MessagePack make_response_msg() {
 int main() {
     using controller::Controller;
     using coordination::Assembler;
+    using coordination::RegisterResult;
     using coordination::UsersGroup;
     using types::IoStatus;
     using types::Opcode;
@@ -96,7 +97,7 @@ int main() {
         UsersGroup ug;
         Controller ctrl(asm_, ug);
 
-        CHECK(ctrl.register_user("alice", 42));
+        CHECK(ctrl.register_user("alice", 42) == RegisterResult::Registered);
 
         int fd = -1;
         CHECK(ctrl.query("alice", fd));
@@ -119,7 +120,7 @@ int main() {
         UsersGroup ug;
         Controller ctrl(asm_, ug);
 
-        CHECK(ctrl.register_user("bob", 7));
+        CHECK(ctrl.register_user("bob", 7) == RegisterResult::Registered);
         CHECK(ctrl.delete_fd(7));
 
         int fd = -1;
@@ -133,9 +134,9 @@ int main() {
         Controller ctrl(asm_, ug);
 
         // 先注册目标用户，否则转发不会触发
-        CHECK(ctrl.register_user("receiver", 99));
+        CHECK(ctrl.register_user("receiver", 99) == RegisterResult::Registered);
         // 发送方 fd 需已登录（未登录连接只收登录帧），这里直接注册模拟已登录
-        CHECK(ctrl.register_user("sender", 42));
+        CHECK(ctrl.register_user("sender", 42) == RegisterResult::Registered);
 
         MessagePack                            req = make_request("receiver");
         std::vector<std::pair<MessagePack, int>> out_queue;
@@ -157,23 +158,25 @@ int main() {
         CHECK(out_queue[1].first.fh_.status_ == Status::ok);
     }
 
-    // ── process: request 但目标未注册 → 只产生 response，不转发 ─
+    // ── process: request 但目标未注册 → 只产生 response(fail)，不转发 ─
     {
         Assembler  asm_;
         UsersGroup ug;
         Controller ctrl(asm_, ug);
 
         // 发送方 fd 需已登录（未登录连接只收登录帧），这里直接注册模拟已登录
-        CHECK(ctrl.register_user("sender", 42));
+        CHECK(ctrl.register_user("sender", 42) == RegisterResult::Registered);
         MessagePack                            req = make_request("notfound");
         std::vector<std::pair<MessagePack, int>> out_queue;
 
         ctrl.process(42, req, out_queue);
 
-        // 只有 response 帧
+        // 只有 response 帧：没有转发入队，所以 [0] 必是回给发送方的响应
         CHECK(out_queue.size() == 1);
         CHECK(out_queue[0].second == 42);
         CHECK(out_queue[0].first.fh_.opcode_ == Opcode::response);
+        // 目标不在线 —— 发送方必须拿到 fail，而不是「已送达」的假象
+        CHECK(out_queue[0].first.fh_.status_ == Status::fail);
     }
 
     // ── process: ack → 产生 ack 应答 ─────────────────────
@@ -183,7 +186,7 @@ int main() {
         Controller ctrl(asm_, ug);
 
         // 发送方 fd 需已登录（未登录连接只收登录帧），这里直接注册模拟已登录
-        CHECK(ctrl.register_user("sender", 42));
+        CHECK(ctrl.register_user("sender", 42) == RegisterResult::Registered);
         MessagePack                            ack_in = make_ack();
         std::vector<std::pair<MessagePack, int>> out_queue;
 
@@ -202,7 +205,7 @@ int main() {
         UsersGroup ug;
         Controller ctrl(asm_, ug);
 
-        CHECK(ctrl.register_user("sender", 42));
+        CHECK(ctrl.register_user("sender", 42) == RegisterResult::Registered);
 
         MessagePack                            res = make_response_msg();
         std::vector<std::pair<MessagePack, int>> out_queue;
@@ -266,6 +269,44 @@ int main() {
         CHECK(out_queue[0].first.fh_.opcode_ == Opcode::response);
         CHECK(out_queue[0].first.fh_.status_ == Status::fail);
         CHECK(!ug.has_fd(42)); // 未绑定
+    }
+
+    // ── process: 已绑定 fd 上改登另一个 uid → response(fail)，原绑定不变 ──
+    {
+        Assembler  asm_;
+        UsersGroup ug;
+        const Controller::UserTable users = {{"alice", "alice123"}, {"bob", "bob123"}};
+        Controller ctrl(asm_, ug, users);
+
+        MessagePack                              login_a = make_login("alice", "alice123");
+        std::vector<std::pair<MessagePack, int>> out_queue;
+        ctrl.process(42, login_a, out_queue);
+        CHECK(out_queue.size() == 1);
+        CHECK(out_queue[0].first.fh_.status_ == Status::ok);
+
+        // 同一 fd 重复登录同一 uid：幂等成功，仍回 ok
+        MessagePack again = make_login("alice", "alice123");
+        out_queue.clear();
+        ctrl.process(42, again, out_queue);
+        CHECK(out_queue.size() == 1);
+        CHECK(out_queue[0].first.fh_.status_ == Status::ok);
+
+        // fd 42 已属于 alice：bob 凭证正确也不得改绑
+        MessagePack login_b = make_login("bob", "bob123");
+        out_queue.clear();
+        ctrl.process(42, login_b, out_queue);
+
+        CHECK(out_queue.size() == 1);
+        CHECK(out_queue[0].second == 42); // 连接保留
+        CHECK(out_queue[0].first.fh_.opcode_ == Opcode::response);
+        CHECK(out_queue[0].first.fh_.status_ == Status::fail);
+
+        // 原绑定完好，且没有产生 bob -> {42} 的幽灵条目
+        int fd = -1;
+        CHECK(!ctrl.query("bob", fd));
+        CHECK(ctrl.query("alice", fd) && fd == 42);
+        CHECK(ug.has_fd(42));
+        CHECK(ug.invariants_ok());
     }
 
     // ── process: 未登录连接发 request → 拒绝 ──────────────
