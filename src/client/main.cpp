@@ -10,6 +10,17 @@
 //   M5 空 content_ 帧 + 合法帧，期望连接被关（验证 !msg.is_valid() 归 error 杀连接）。
 //   M6 6 字节未知 opcode 帧，期望连接被杀（验证 is_known_opcode 拒绝）。
 // 退出码：预期结果 → 0；异常（超时、回显缺失/多帧、连接未关）→ 非 0。
+//
+// M1-M7 都是单连接场景，观测不到「跨 fd 转发」这条路径。M8-M10 是双进程场景：
+// 两个客户端进程各自以不同 uid 登录（服务端演示用户表 src/server/main.cpp:21-24 只有
+// alice / bob 两个），由 M10 向对端 uid 发 request、M8/M9 作为对端收帧，
+// 从而让「发送方 fd」与「转发目标 fd」在一次 request 里分离，可分别观测生死。
+//   M8  接收方：登录后持续收帧并打印，看转发是否真的落到对端进程。
+//   M9  接收方（停读变体）：登录后保持连接但永不 recv。服务端向本连接的写缓冲
+//       只进不出，越过 connections.cpp 的 kWriteHighWater(1MiB) 后 send() 返回 error
+//       —— 这是唯一可从客户端触发的「写目标失败」路径。
+//   M10 发送方：向对端 uid 连发 request（条数与帧体大小均由命令行给出），
+//       边发边排空自身入站帧，发完后驻留观察本连接是否被服务端一并杀掉。
 
 #include <cerrno>
 #include <chrono>
@@ -17,12 +28,15 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -37,6 +51,17 @@ namespace {
 constexpr int         kServerPort     = 7891;
 constexpr int         kRecvTimeoutSec = 5;  // 第二帧 / 连接关闭必须在该时间内发生
 constexpr std::size_t kM4PartialBody  = 8;  // M4 半帧：6 字节帧头 + 8 字节帧体
+
+// M8-M10 用
+constexpr std::size_t kNoBodyCap        = static_cast<std::size_t>(-1); // 不截断帧体打印
+constexpr std::size_t kBriefBodyBytes   = 128; // 双进程场景帧体可达 64KiB，只打印前若干字节
+constexpr int         kTickSec          = 1;   // 接收方每次 recv 的超时片，用于逼近驻留时限
+constexpr int         kHoldSecDefault   = 60;  // 接收方默认驻留秒数（等人工启动发送方）
+constexpr int         kSenderHoldSec    = 10;  // 发送方发完后默认驻留秒数（观察是否被杀）
+constexpr std::size_t kSenderCount      = 1;   // 发送方默认发帧条数
+constexpr std::size_t kSenderContentLen = 64;  // 发送方默认 content_ 字节数
+constexpr int         kPollTimeoutMs    = 5000; // 发送侧不可写时单次等待上限
+constexpr std::size_t kProgressEvery    = 16;  // 发送方每若干帧打印一次进度
 
 // 构造一条合法消息；content 为空时帧结构完整但 Message::is_valid() 为假（M5）。
 Message make_message(const char* content, const char* msg_id) {
@@ -88,14 +113,20 @@ bool set_recv_timeout(int fd, int sec) {
 
 // M1-M6 以已登录连接为前提（登录协议落地后，未登录连接发 request/ack 会被服务端拒绝）。
 // 连接建立后先发 login 帧并消耗一帧响应；返回 false 表示登录帧发送失败或未收到响应。
-bool pre_login(int fd) {
+// uid / credential 由调用方给出：M1-M6 固定用演示表里的 alice，M8-M10 由命令行指定，
+// 两个进程才能以不同身份登录同一台服务端。
+// out_status 回写响应帧头的 status 字节（0 = ok）；M1-M6 不看它，M8-M10 据此拒绝带病继续。
+bool pre_login(int fd, const std::string& uid, const std::string& credential,
+               std::uint8_t& out_status) {
+    out_status = static_cast<std::uint8_t>(types::Status::_init_);
+
     Message msg;
     msg.chat_type_     = types::ChatTypes::single;
     msg.msg_type_      = types::MessageTypes::text;
-    msg.from_uid_      = "alice";
-    msg.to_uid_        = "alice";
+    msg.from_uid_      = uid;
+    msg.to_uid_        = uid;
     msg.client_msg_id_ = "pre-login";
-    msg.content_       = "alice123"; // 与服务端 main.cpp 演示用户表一致
+    msg.content_       = credential; // 与服务端 main.cpp 演示用户表一致
 
     std::vector<std::byte> frame;
     if (!encode_frame(msg, types::Opcode::login, types::Status::ok, frame)) {
@@ -113,15 +144,35 @@ bool pre_login(int fd) {
         std::cerr << "[pre-login] no login response (closed / timeout)\n";
         return false;
     }
+    out_status = static_cast<std::uint8_t>(chunk[1]);
     std::cout << "[pre-login] login response: opcode=" << static_cast<int>(chunk[0])
               << " status=" << static_cast<int>(chunk[1]) << "\n";
+    return true;
+}
+
+// M8-M10 的登录入口：登录必须成功，否则后续 request 会被服务端当未认证帧丢弃，
+// 整个双进程场景失去意义 —— 这里直接判死，不带病继续。
+bool login_as(int fd, const std::string& uid, const std::string& credential) {
+    std::uint8_t status = 0;
+    if (!pre_login(fd, uid, credential, status)) {
+        return false;
+    }
+    if (status != static_cast<std::uint8_t>(types::Status::ok)) {
+        std::cerr << "[login] uid=" << uid << " rejected (status=" << static_cast<int>(status)
+                  << ")\n";
+        return false;
+    }
+    std::cout << "[login] uid=" << uid << " logged in\n";
     return true;
 }
 
 // 从累积缓冲解析完整帧并打印（帧头字段 + 帧体字节，供人工比对）。
 // 帧边界按「wire_size + 4 字节大端 body_len」判定；帧体未齐则保留字节继续等。
 // count 为已解析帧总数（跨多次调用累计，帧序号据此续排）。
-void drain_frames(std::vector<std::byte>& acc, int& count) {
+// label 是打印用的帧别（M1-M6 是自身回显，M8-M10 收的是服务端转发/响应）。
+// body_cap 限制帧体打印字节数，kNoBodyCap 表示原样全打（M1-M6 帧体只有百余字节）。
+void drain_frames(std::vector<std::byte>& acc, int& count, const char* label,
+                  std::size_t body_cap) {
     while (acc.size() >= FrameHeader::wire_size) {
         std::uint32_t body_len = 0;
         std::memcpy(&body_len, acc.data() + 2, sizeof(body_len));
@@ -132,13 +183,17 @@ void drain_frames(std::vector<std::byte>& acc, int& count) {
             break; // 帧体未齐
         }
 
-        std::cout << "  echo frame #" << (count + 1)
+        const std::size_t print_len = body_len < body_cap ? body_len : body_cap;
+        std::cout << "  " << label << " frame #" << (count + 1)
                   << ": opcode=" << static_cast<int>(acc[0])
                   << " status=" << static_cast<int>(acc[1])
                   << " body_len=" << body_len
                   << " body=";
         std::cout.write(
-            reinterpret_cast<const char*>(acc.data() + FrameHeader::wire_size), body_len);
+            reinterpret_cast<const char*>(acc.data() + FrameHeader::wire_size), print_len);
+        if (print_len < body_len) {
+            std::cout << "...(+" << (body_len - print_len) << "B)";
+        }
         std::cout << std::endl;
 
         acc.erase(acc.begin(), acc.begin() + static_cast<std::ptrdiff_t>(frame_len));
@@ -151,7 +206,7 @@ void drain_frames(std::vector<std::byte>& acc, int& count) {
 int recv_frames(int fd, std::vector<std::byte>& acc, int want) {
     int count = 0; // 跨多次 recv 累计的完整帧总数
     for (;;) {
-        drain_frames(acc, count);
+        drain_frames(acc, count, "echo", kNoBodyCap);
         if (count >= want) {
             return count;
         }
@@ -179,7 +234,9 @@ int recv_frames(int fd, std::vector<std::byte>& acc, int want) {
 
 // M5/M6：等服务端关闭连接，把 EOF / recv 错误当作预期结果。
 // 返回 0 = 连接已关（预期）；1 = 超时仍连接（未预期，说明服务端没有杀连接）。
-int recv_expect_close(int fd, std::vector<std::byte>& acc) {
+// acc 只为与 recv_frames 保持同一组调用签名而保留：这里等的是 close，
+// 收到的残余数据直接打印、不入缓冲区。
+int recv_expect_close(int fd, [[maybe_unused]] std::vector<std::byte>& acc) {
     for (;;) {
         std::byte chunk[4096];
         const ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
@@ -204,22 +261,256 @@ int recv_expect_close(int fd, std::vector<std::byte>& acc) {
     }
 }
 
+// 十进制无符号命令行参数解析。空串、含非数字字符、溢出一律判非法（返回 false，不改 out）。
+bool parse_uint(const std::string& s, std::size_t& out) {
+    if (s.empty() || s.find_first_not_of("0123456789") != std::string::npos) {
+        return false;
+    }
+    try {
+        out = static_cast<std::size_t>(std::stoull(s));
+    } catch (...) { // out_of_range
+        return false;
+    }
+    return true;
+}
+
+// M10 帧体：前缀带序号便于在接收端逐帧对号，其余用 'A' 填到指定长度
+// （'A' 不触发 JSON 转义，帧体字节数 ≈ 固定开销 + content_bytes）。
+std::string make_padded_content(std::size_t index, std::size_t content_bytes) {
+    std::string s = "s4a-" + std::to_string(index);
+    if (s.size() < content_bytes) {
+        s.append(content_bytes - s.size(), 'A');
+    }
+    return s;
+}
+
+// 非阻塞排空自身入站字节并打印已凑齐的帧。
+// 返回 false = 对端已关闭或 recv 出错（此时残留字节先解完再报）；true = 已读到 EAGAIN。
+bool pump_inbound(int fd, std::vector<std::byte>& acc, int& in_count) {
+    for (;;) {
+        std::byte     chunk[4096];
+        const ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
+        if (n > 0) {
+            acc.insert(acc.end(), chunk, chunk + n);
+            drain_frames(acc, in_count, "recv", kBriefBodyBytes); // 每轮就地解帧，acc 不无界增长
+            continue;
+        }
+        if (n == 0) {
+            drain_frames(acc, in_count, "recv", kBriefBodyBytes);
+            std::cout << "  connection closed by peer (EOF) after " << in_count
+                      << " inbound frame(s)\n";
+            return false;
+        }
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return true;
+        }
+        std::cout << "  recv error: " << std::strerror(errno) << "\n";
+        return false;
+    }
+}
+
+// M8 / M9 接收方。keep_reading 为真时持续收帧并打印；为假时登录后一次也不 recv
+// （停读变体），让服务端向本连接的写缓冲堆到 kWriteHighWater 之上。
+// 返回 0 = 驻留期满、连接仍在（M8 还要求至少收到一帧）；1 = 期间被对端关闭或出错。
+int run_receiver(int fd, bool keep_reading, int hold_sec) {
+    // 驻留期以 kTickSec 为片：阻塞 recv 超时即为一片，无需额外定时器
+    if (keep_reading && !set_recv_timeout(fd, kTickSec)) {
+        std::cerr << "Failed to set recv tick timeout\n";
+        return 1;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(hold_sec);
+    std::vector<std::byte> acc;
+    int                    count = 0;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!keep_reading) {
+            // 关键：不 recv。内核接收缓冲填满后通告零窗口，服务端 write_buf_ 随之堆积。
+            std::this_thread::sleep_for(std::chrono::seconds(kTickSec));
+            continue;
+        }
+
+        std::byte     chunk[4096];
+        const ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
+        if (n > 0) {
+            acc.insert(acc.end(), chunk, chunk + n);
+            drain_frames(acc, count, "recv", kBriefBodyBytes);
+            continue;
+        }
+        if (n == 0) {
+            std::cout << "  connection closed by peer (EOF) after " << count
+                      << " inbound frame(s)\n";
+            return 1;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            continue; // 一个空闲时间片，继续等
+        }
+        std::cout << "  recv error: " << std::strerror(errno) << "\n";
+        return 1;
+    }
+
+    if (!keep_reading) {
+        std::cout << "  held " << hold_sec << "s without reading a single byte; still connected\n";
+        return 0;
+    }
+    std::cout << "  held " << hold_sec << "s, received " << count
+              << " frame(s), still connected\n";
+    return count > 0 ? 0 : 1;
+}
+
+// M10 发送方。向 peer_uid 连发 count 条 request，边发边排空自身入站帧
+// —— 不排空的话自身响应帧会先把服务端到本连接的写缓冲顶爆，观测点就从
+// 「写目标失败」污染成「写自己失败」，两者的处置差异正是要观测的东西。
+// 返回 0 = 全部发完且驻留期内本连接仍存活；1 = 中途/驻留期内被服务端关闭或出错。
+int run_sender(int fd, const std::string& uid, const std::string& peer_uid,
+               std::size_t count, std::size_t content_bytes, int hold_sec) {
+    // 转成非阻塞：单线程里交替 send / recv 必须靠 EAGAIN 让出，不能被阻塞 send 卡死
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        std::cerr << "Failed to set non-blocking mode\n";
+        return 1;
+    }
+
+    std::vector<std::byte> acc;
+    int                    in_count    = 0;
+    std::size_t            sent_frames = 0;
+    std::size_t            sent_bytes  = 0;
+    bool                   closed      = false;
+
+    for (std::size_t i = 0; i < count && !closed; ++i) {
+        Message msg;
+        msg.chat_type_     = types::ChatTypes::single;
+        msg.msg_type_      = types::MessageTypes::text;
+        msg.from_uid_      = uid;
+        msg.to_uid_        = peer_uid;
+        msg.client_msg_id_ = "s4a-" + std::to_string(i);
+        msg.content_       = make_padded_content(i, content_bytes);
+
+        std::vector<std::byte> frame;
+        if (!encode_frame(msg, types::Opcode::request, types::Status::ok, frame)) {
+            std::cerr << "[m10] failed to encode frame #" << (i + 1) << ": content_bytes="
+                      << content_bytes << " likely pushes the body past max_message_body_length="
+                      << max_message_body_length << "\n";
+            return 1;
+        }
+        if (i == 0) {
+            std::cout << "[m10] frame size=" << frame.size() << "B (content_bytes="
+                      << content_bytes << "), sending " << count << " request(s) to uid="
+                      << peer_uid << "\n";
+        }
+
+        std::size_t off = 0;
+        while (off < frame.size()) {
+            // MSG_NOSIGNAL：服务端若已关掉本连接，写入必须以 EPIPE 返回而不是 SIGPIPE 打死进程
+            const ssize_t n = send(fd, frame.data() + off, frame.size() - off, MSG_NOSIGNAL);
+            if (n > 0) {
+                off += static_cast<std::size_t>(n);
+                continue;
+            }
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                if (!pump_inbound(fd, acc, in_count)) { // 先排空入站，给服务端腾出读进度
+                    closed = true;
+                    break;
+                }
+                pollfd   pfd{};
+                pfd.fd     = fd;
+                pfd.events = POLLIN | POLLOUT;
+                const int pr = poll(&pfd, 1, kPollTimeoutMs);
+                if (pr == 0) {
+                    std::cout << "  [m10] send stalled " << (kPollTimeoutMs / 1000)
+                              << "s at frame #" << (i + 1) << " (" << off << "/" << frame.size()
+                              << "B)\n";
+                } else if (pr < 0 && errno != EINTR) {
+                    std::cout << "  [m10] poll error: " << std::strerror(errno) << "\n";
+                    return 1;
+                }
+                continue;
+            }
+            std::cout << "  [m10] send error at frame #" << (i + 1) << " (" << off << "/"
+                      << frame.size() << "B): " << std::strerror(errno)
+                      << " -- server closed this connection\n";
+            closed = true;
+            break;
+        }
+        if (closed) {
+            break;
+        }
+
+        ++sent_frames;
+        sent_bytes += frame.size();
+        if (!pump_inbound(fd, acc, in_count)) {
+            closed = true;
+            break;
+        }
+        if (sent_frames % kProgressEvery == 0) {
+            std::cout << "  [m10] progress: sent " << sent_frames << "/" << count << " frame(s), "
+                      << sent_bytes << "B out, " << in_count << " frame(s) in\n";
+        }
+    }
+
+    std::cout << "[m10] send phase done: sent " << sent_frames << "/" << count << " frame(s), "
+              << sent_bytes << "B out, " << in_count << " frame(s) in\n";
+    if (closed) {
+        std::cout << "[m10] sender connection is GONE\n";
+        return 1;
+    }
+
+    // 驻留观察：跨 fd 写失败在服务端是同一轮 epoll 里的决策，若本连接被牵连关闭，
+    // EOF 会紧随其后到达。驻留期满仍在线，才说明发送方活了下来。
+    std::cout << "[m10] holding " << hold_sec << "s to observe whether this connection survives\n";
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(hold_sec);
+    while (std::chrono::steady_clock::now() < deadline) {
+        pollfd pfd{};
+        pfd.fd     = fd;
+        pfd.events = POLLIN;
+        const int pr = poll(&pfd, 1, kTickSec * 1000);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            std::cout << "  [m10] poll error: " << std::strerror(errno) << "\n";
+            return 1;
+        }
+        if (pr > 0 && !pump_inbound(fd, acc, in_count)) {
+            std::cout << "[m10] sender connection is GONE (closed during hold)\n";
+            return 1;
+        }
+    }
+    std::cout << "[m10] sender still connected after " << hold_sec << "s, total " << in_count
+              << " inbound frame(s)\n";
+    return 0;
+}
+
 void usage(const char* prog) {
     std::cout
-        << "Usage: " << prog << " [--mode m1|m2|m3|m4|m5|m6|m7 [args...]]\n"
+        << "Usage: " << prog << " [--mode m1|m2|m3|m4|m5|m6|m7|m8|m9|m10 [args...]]\n"
         << "  m1 (default) : 单帧回显基线\n"
         << "  m2/m3        : 一次 send() 发两个完整合法帧，期望恰好两个回显（验证 drain 无 LT stall / 粘包丢帧）\n"
         << "  m4           : 半帧（帧头 + 8B 帧体）→ 停顿 1.5s → 补齐，期望恰好一个回显（验证 incomplete 不消耗字节）\n"
         << "  m5           : 空 content_ 帧 + 合法帧一次 send()，期望连接被关\n"
         << "  m6           : 6 字节未知 opcode 帧，期望连接被杀\n"
         << "  m7 <uid> <credential> : 登录：发 login 帧，按响应帧头 status 判定（ok -> 0，fail -> 1）\n"
+        << "  m8 <uid> <credential> [hold_sec] : 接收方：登录后持续收帧并打印，默认驻留 "
+        << kHoldSecDefault << "s（收到 >=1 帧且未被关 -> 0）\n"
+        << "  m9 <uid> <credential> [hold_sec] : 接收方（停读变体）：登录后永不 recv，只保持连接，默认驻留 "
+        << kHoldSecDefault << "s\n"
+        << "  m10 <uid> <credential> <peer_uid> [count] [content_bytes] [hold_sec] :\n"
+        << "        发送方：向 peer_uid 连发 count 条 request（默认 " << kSenderCount
+        << " 条 / content_bytes=" << kSenderContentLen << "），边发边收，\n"
+        << "        发完驻留 hold_sec（默认 " << kSenderHoldSec
+        << "s）观察本连接是否被牵连关闭（存活 -> 0，被关 -> 1）\n"
+        << "  双进程用法（uid 取服务端演示表 alice/bob）：先起 m8 或 m9 作接收方，再起 m10 作发送方。\n"
+        << "  m9 + 足量的 m10 可把目标连接的服务端写缓冲顶过 1MiB 高水位，触发「写目标失败」路径。\n"
         << "  也可写作 --mode=m7 <uid> <credential> 或直接传 m7；退出码：预期结果 → 0，异常 → 非 0\n";
 }
 
 } // namespace
 int main(int argc, char* argv[]) {
     std::string mode = "m1";
-    std::string uid, credential;
+    // 模式后的位置参数原样收集：m7 只用两个，m10 最多用四个，语义由各模式分支自行解读。
+    std::vector<std::string> args;
 
     if (argc >= 2) {
         const std::string arg = argv[1];
@@ -227,34 +518,81 @@ int main(int argc, char* argv[]) {
             usage(argv[0]);
             return 0;
         }
-        if (arg == "--mode") { // --mode m7 uid credential
+        int first = 0; // 位置参数在 argv 中的起点，0 表示没有
+        if (arg == "--mode") {                     // --mode m7 uid credential
             if (argc < 3) {
                 usage(argv[0]);
                 return 2;
             }
-            mode = argv[2];
-            if (argc >= 4) uid = argv[3];
-            if (argc >= 5) credential = argv[4];
+            mode  = argv[2];
+            first = 3;
         } else if (arg.rfind("--mode=", 0) == 0) { // --mode=m7 uid credential
-            mode = arg.substr(7);
-            if (argc >= 3) uid = argv[2];
-            if (argc >= 4) credential = argv[3];
-        } else {
-            mode = arg;
+            mode  = arg.substr(7);
+            first = 2;
+        } else {                                   // m7 uid credential
+            mode  = arg;
+            first = 2;
+        }
+        for (int i = first; i < argc; ++i) {
+            args.emplace_back(argv[i]);
         }
     }
 
     if (mode != "m1" && mode != "m2" && mode != "m3" && mode != "m4"
-        && mode != "m5" && mode != "m6" && mode != "m7") {
+        && mode != "m5" && mode != "m6" && mode != "m7"
+        && mode != "m8" && mode != "m9" && mode != "m10") {
         std::cerr << "Unknown mode: " << mode << "\n";
         usage(argv[0]);
         return 2;
     }
-    if (mode == "m7" && (uid.empty() || credential.empty())) {
-        std::cerr << "m7 requires <uid> <credential>\n";
-        usage(argv[0]);
+
+    // m7-m10 都以「显式身份」为前提；m10 还要一个投递目标 uid。
+    const bool needs_identity = (mode == "m7" || mode == "m8" || mode == "m9" || mode == "m10");
+    std::string uid, credential, peer_uid;
+    if (needs_identity) {
+        if (args.size() < 2 || args[0].empty() || args[1].empty()) {
+            std::cerr << mode << " requires <uid> <credential>\n";
+            usage(argv[0]);
+            return 2;
+        }
+        uid        = args[0];
+        credential = args[1];
+    }
+
+    // m8 / m9 的 [hold_sec]，m10 的 [count] [content_bytes] [hold_sec]
+    std::size_t hold_sec      = kHoldSecDefault;
+    std::size_t sender_count  = kSenderCount;
+    std::size_t content_bytes = kSenderContentLen;
+    if (mode == "m8" || mode == "m9") {
+        if (args.size() > 2 && !parse_uint(args[2], hold_sec)) {
+            std::cerr << mode << ": hold_sec must be a non-negative integer\n";
+            return 2;
+        }
+    } else if (mode == "m10") {
+        if (args.size() < 3 || args[2].empty()) {
+            std::cerr << "m10 requires <uid> <credential> <peer_uid>\n";
+            usage(argv[0]);
+            return 2;
+        }
+        peer_uid = args[2];
+        hold_sec = static_cast<std::size_t>(kSenderHoldSec);
+        if ((args.size() > 3 && !parse_uint(args[3], sender_count))
+            || (args.size() > 4 && !parse_uint(args[4], content_bytes))
+            || (args.size() > 5 && !parse_uint(args[5], hold_sec))) {
+            std::cerr << "m10: count / content_bytes / hold_sec must be non-negative integers\n";
+            return 2;
+        }
+        if (sender_count == 0 || content_bytes == 0) {
+            std::cerr << "m10: count and content_bytes must be >= 1\n";
+            return 2;
+        }
+    }
+    // 驻留秒数进 std::chrono::seconds(int)，先钉在 int 值域内
+    if (hold_sec > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        std::cerr << mode << ": hold_sec too large\n";
         return 2;
     }
+    const int hold_seconds = static_cast<int>(hold_sec);
 
     std::cout << "mode=" << mode << std::endl;
 
@@ -287,11 +625,15 @@ int main(int argc, char* argv[]) {
     }
 
 
-    // M1-M6 以已登录连接为前提；m7 本身是登录场景，不再前置登录。
-    if (mode != "m7" && !pre_login(client_fd)) {
-        std::cerr << "pre-login failed, aborting\n";
-        close(client_fd);
-        return 1;
+    // M1-M6 以已登录连接为前提，固定用演示表里的 alice；
+    // m7 本身是登录场景，m8-m10 在各自分支里按命令行身份登录，都不走这里。
+    if (!needs_identity) {
+        std::uint8_t pre_status = 0;
+        if (!pre_login(client_fd, "alice", "alice123", pre_status)) {
+            std::cerr << "pre-login failed, aborting\n";
+            close(client_fd);
+            return 1;
+        }
     }
     int result = 1;
     if (mode == "m1") {
@@ -401,7 +743,7 @@ int main(int argc, char* argv[]) {
             std::vector<std::byte> acc;
             result = recv_expect_close(client_fd, acc);
         }
-    } else { // m7 登录
+    } else if (mode == "m7") { // m7 登录
         Message msg;
         msg.chat_type_     = types::ChatTypes::single;
         msg.msg_type_      = types::MessageTypes::text;
@@ -448,6 +790,21 @@ int main(int argc, char* argv[]) {
                     std::cout << "[m7] recv error: " << std::strerror(errno) << "\n";
                 }
             }
+        }
+    } else if (mode == "m8" || mode == "m9") {
+        // 双进程场景的接收侧：m8 正常读，m9 登录后停读（用于把服务端写缓冲顶过高水位）
+        if (login_as(client_fd, uid, credential)) {
+            const bool keep_reading = (mode == "m8");
+            std::cout << "[" << mode << "] receiver uid=" << uid
+                      << (keep_reading ? " reading" : " NOT reading (stalled)")
+                      << ", holding " << hold_seconds << "s\n";
+            result = run_receiver(client_fd, keep_reading, hold_seconds);
+        }
+    } else if (mode == "m10") {
+        // 双进程场景的发送侧
+        if (login_as(client_fd, uid, credential)) {
+            result = run_sender(client_fd, uid, peer_uid, sender_count, content_bytes,
+                                hold_seconds);
         }
     }
 
