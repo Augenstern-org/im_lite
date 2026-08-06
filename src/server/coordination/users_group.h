@@ -34,7 +34,7 @@ namespace coordination {
             // 添加 uid 表的第一个 fd
             if (uid_to_fd_.try_emplace(uid, fd).second) return true;
             // 使用向量储存之后允许为同一 uid 继续添加 fd
-            // uid_to_fd_[uid].add(fd);
+            uid_to_fd_[uid].add(fd);
             return true;
         }
 
@@ -54,11 +54,11 @@ namespace coordination {
             // 管理 uid 表
             // 使用向量储存之后，单个元素直接调用析构函数
             User& user = it->second;
-            // if (user.vec().size() == 1) delete_user(uid);
+            if (user.vec().size() == 1) delete_user(uid);
 
             // 否则仅删除对应设备的 fd
-            // user.delete_device(fd);
-            delete_user(uid);
+            user.delete_device(fd);
+            // delete_user(uid);
             return true;
         }
 
