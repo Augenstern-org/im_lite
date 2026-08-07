@@ -6,17 +6,27 @@
 
 ### 待办
 
-- [ ] **跨 fd 转发 — EPOLLOUT 武装与 pending_close_ 排除** `src/server/core/core.cpp:206`
-  > 基础通路已落地（`controller.cpp:45` 的 `out_queue.emplace_back(rmp, to_fd)`，
-  > `core.cpp:206` 的 `conns_.find(item.second)` 查目标连接写入）。以下子项仍待做。
-  - [ ] 目标 fd 的 `EPOLLOUT` 无人武装：`update_events()`（`core.h:43`，私有）在 `core.cpp:237`
+- [ ] **跨 fd 转发 — EPOLLOUT 武装与 fan-out**（**部分消费，整体仍未收敛**）
+  `src/server/core/core.cpp:211`
+  > 基础通路已落地（`controller.cpp:78` 的 `out_queue.emplace_back(rmp, to_fd)`，
+  > `core.cpp:218` 的 `conns_.find(to_fd)` 查目标连接写入）。
+  > **2026-08-06 只消费了下面三个子项中的第二个**（`pending_close_` 排除，连带把失败归因从
+  > 「杀发送方」改成「杀目标」）。标题保持未勾选：`EPOLLOUT` 武装与 fan-out 都还是空的，
+  > **不要把它读成「转发已经做完了」**。
+  - [ ] 目标 fd 的 `EPOLLOUT` 无人武装：`update_events()`（`core.h:45`，私有）在 `core.cpp:267`
     只对**当前** fd 调用一次。向另一个 fd 部分写入后，没有任何地方会给它挂上 `EPOLLOUT`，
     该连接的出站数据会**静默无限期滞留**。反方向同样要小心：LT 模式下 `EPOLLOUT` 挂在空闲可写的
     socket 上会让每次 `epoll_wait` 立刻返回，形成 CPU 空转。规则是「写缓冲非空才武装，排空即撤」。
-  - [ ] 目标 fd 可能已在 `pending_close_` 里：`close_client()`（`core.cpp:257-261`）只做
-    `EPOLL_CTL_DEL` + 入队，真正的 `erase` 推迟到 `drain_pending_close()`（`core.cpp:264-272`）。
+  - [x] 目标 fd 可能已在 `pending_close_` 里：`close_client()`（`core.cpp:287-299`）只做
+    `EPOLL_CTL_DEL` + 入队，真正的 `erase` 推迟到 `drain_pending_close()`（`core.cpp:313-321`）。
     因此 `conns_.find(target_fd)` **仍能命中**一个已被摘出 epoll、即将销毁的连接。
     跨 fd 写入必须同时排除 `pending_close_` 中的 fd。
+    > 2026-08-06 落地：新增 `Core::is_pending_close()`（`core.cpp:303`，`run()` 原地内联的扫描
+    > 也改成调用它）；出队循环 `core.cpp:219` 用它排除已判死的目标。同一轮顺带修掉 D3：三种失败
+    > 模式各自归因 —— 目标不可投递 / 编码失败只丢该条并 `continue`（不再 `break`，发送方排在转发
+    > 之后的回执不会被吞），写目标失败改为 `close_client(to_fd)` 杀**目标**而非发送方；自发自收
+    > （`to_fd == fd`）回落到唯一的入站杀点。`close_client()` 同时改为幂等，避免同一 fd 重复入队
+    > 触发两次 `disconnect_handler_`。不变式 (c) 已按「仅对入站 fd 为 0」重写（`core.cpp:160-172`）。
   - [ ] fan-out：`to_uid_` → fd 集合的解析与多 fd 分发（协调层职责，
     见 `docs/architecture.md` §2.2）。当前 `User` 仅持单 `fd_`，需等向量化落地。
 
@@ -25,7 +35,7 @@
   > `disconnect_handler` 已调用 `controller.delete_fd(fd)` 解绑；纯头文件无需独立 CMake target。
   - [x] 键类型不匹配：`group_` 的键是 `uint32_t`，而 `Message::from_uid_` / `to_uid_`
     （`src/common/message.h:34-35`）是 `std::string`。二者必须先统一。
-  - [x] 断开时解绑没有落点：`main.cpp` 的 disconnect 回调只打印日志。`docs/architecture.md:167-176`
+  - [x] 断开时解绑没有落点：`main.cpp` 的 disconnect 回调只打印日志。`docs/architecture.md:169-178`
     要求断开即从用户组移除 fd，否则 fd 号被新连接复用后会**把消息发给错的人**。
   - [x] `users_group.cpp` 不属于任何 CMake target（`src/server/CMakeLists.txt`）。一旦给
     `UsersGroup` 补外联成员函数，`server` 立即 undefined reference。是建 `coordination`
@@ -41,7 +51,7 @@
 
 - [ ] **应答 / 响应帧的帧体形态未定**
   - [ ] `ack` 的帧体是占位：`content_ = '\x01'`，长度 1、内容为字节 0x01 的字符串，
-    不是任何约定的应答体（`src/server/coordination/assembler.h:39-47`）。
+    不是任何约定的应答体（`src/server/coordination/assembler.h:44-52`）。
   - [ ] `request` 的响应帧当前把入站 `Message` 原样复制，只把 opcode 翻成 `response`。
     真正该带的是服务端消息序号 —— 即下一条。
 
@@ -64,11 +74,11 @@
   `FrameHeader::wire_size + out_rmp.fh_.body_len_` 今天可得，`core.cpp:182` 的 drain 循环已按
   精确 erase 推进。字节级切分、「暂时不完整 vs 协议错误」的区分（`incomplete`，decoder.h:32
   帧头未齐 / :55 帧体未齐，保留字节）、超长帧关连接处置（`frame_too_long` → fatal → 关连接，
-  core.cpp:177/:213-217）均已随「核心层错误路径三连」落地，不再是本条的待办。
+  core.cpp:186-189/:260-264）均已随「核心层错误路径三连」落地，不再是本条的待办。
 
 - [ ] **帧完整性校验**：magic + CRC16，尚未设计。
 
-- [ ] **零拷贝编码路径** `src/common/encoder.h:44-48`、`:99`、`src/server/core/core.cpp:176`
+- [ ] **零拷贝编码路径** `src/common/encoder.h:44-48`、`:99`、`src/server/core/core.cpp:238`
   依赖项（原「编码缓冲按条分配」）已落地：`encode_buf_` 跨消息、跨连接复用并按需增长，
   每条消息 65536 字节的分配与清零已经消失。这条还剩的是**拷贝次数** —— 一条出站帧仍要经过
   三次搬运：`body_serializer()` 先 `dump()` 出一个 `std::string`，`body_writer()` 再 `memcpy`
@@ -86,21 +96,21 @@
   端到端联调只能靠客户端侧的回显判断。
 
 - [ ] **`docs/architecture.md` 与代码漂移**
-  - [x] `:200` 的 handler 签名仍写 `std::vector<MessagePack>&`，实际是
+  - [x] `:202` 的 handler 签名仍写 `std::vector<MessagePack>&`，实际是
     `std::vector<std::pair<MessagePack, int>>&`。→ 2026-08-04 已修正。
-  - [x] `:203`「仍为回显」与 `:30` 的骨架清单已过时。→ 2026-08-04 已更新。
-  - [ ] `:165` 引用的 `main.cpp` 行号（`:14` / `:19` / `:29`）与实际不符。
-  - [ ] `:224`「超长帧防护」给次序硬约束列了**两条**理由，其中一条已作废：原文写
+  - [x] `:205`「仍为回显」与 `:30` 的骨架清单已过时。→ 2026-08-04 已更新。
+  - [ ] `:167` 引用的 `main.cpp` 行号（`:14` / `:19` / `:29`）与实际不符。
+  - [ ] `:228`「超长帧防护」给次序硬约束列了**两条**理由，其中一条已作废：原文写
     「`Encoder::encode()` 在序列化完成之后、**向 `out_buf` 写入之前**拒绝——这个次序是硬约束，
     写在 `memcpy` 之后等于越界已经发生，且会破坏 `encode()` 自述的『返回错误时 `out_buf`
     一字节未动』后置条件」。前一条（越界）已不再成立：`encode()` 现在自己按需增长 `out_buf`
-    （`src/common/encoder.h:95-96`），调用方不再负责容量，写多少都不会越界。后一条
+    （`src/common/encoder.h:101`），调用方不再负责容量，写多少都不会越界。后一条
     （`out_buf` 一字节未动）仍然成立。次序硬约束本身**依然是硬约束**，只是现役理由变成
     「防 DoS 放大：先分配后校验等于让 6 字节头诱导一次 64KB 分配」与「`resize` 会抛
     `bad_alloc`，必须排在 `body_len_` 回写之前，失败路径才不留下半写状态」——
     两条都记在 `encoder.h:87-94` 的注释里。→ architecture.md §7 超长帧防护段已缩短，
     此条目所指的具体文字已变更，相关理由以 `encoder.h` 注释为准。
-  - [x] `§7 待定项`（`:221-226`）改为指向本文件，不再各自维护一份。→ 2026-08-04 已添加指向。
+  - [x] `§7 待定项`（`:223-232`）改为指向本文件，不再各自维护一份。→ 2026-08-04 已添加指向。
 
 - [ ] `UsersGroup` `注册fd` `删除fd` 改为多线程设计。
 - [x] `register_handler` 暂时不能正确地将 `fd` 添加到 `uid_to_fd_` / `fd_to_uid_` 两哈希表，因为 `accept_client` 阶段不能读取 `uid`。
@@ -124,8 +134,8 @@
   按需增长 `out_buf`。不做的仍然是 `rmp.is_valid()` 这类**内容**校验。
 - **编码复用缓冲归调用方持有，`Encoder` 保持无状态**（2026-07-31 决策，取代 2026-07-29 的
   「编码器内部缓冲明确推迟」）。触发条件已到并已落地 —— 但**解决形式与当初设想不同**：
-  复用缓冲是 `core::Core::encode_buf_`（`src/server/core/core.h:56`），`encode()` 依旧是 static、
-  只把出参按需增长（`src/common/encoder.h:95-96`，只增不减），编码器本身不持有任何状态。
+  复用缓冲是 `core::Core::encode_buf_`（`src/server/core/core.h:58`），`encode()` 依旧是 static、
+  只把出参按需增长（`src/common/encoder.h:101`，只增不减），编码器本身不持有任何状态。
   不采用「编码器自持缓冲」的理由：那样 `Encoder` 就得对外返回一个指向内部缓冲的视图
   （指针 / span），而该视图会被**下一次 `encode()` 静默失效** —— 调用方手里是一块随时可能被
   覆写、甚至因 realloc 而悬空的内存，失效时机取决于编码器内部状态，类型上无从表达、
@@ -137,16 +147,16 @@
   字节拼接在一起，直接跨连接串包。
   (2) `Connections::read_buf_` 已经在做累积且不预分配，再加一层 `Decoder::buf_` 只是多一跳全量拷贝。
   附带记一条今天成立、将来要盯住的性质：解码器**确实按 `body_len` 分配**包体字符串
-  （`decoder.h:47-50`，长度恰为 `body_len`），但那次分配排在**两道**校验之后 ——
-  `decoder.h:44` 的上限校验，与 `decoder.h:45` 的 `in_buf.size() - wire_size < body_len`
+  （`decoder.h:57-60`，长度恰为 `body_len`），但那次分配排在**两道**校验之后 ——
+  `decoder.h:48` 的上限校验，与 `decoder.h:55` 的 `in_buf.size() - wire_size < body_len`
   （即声称的字节确已全部到达）。因此当前的放大比是 **1:1**：要让服务端分配 N 字节，
   对端必须真的把 N 字节发过来。这不是「零分配」，是「分配量被实际到达量卡住」。
   将来若为性能加 `reserve(body_len)`、或按 `body_len` 预留读缓冲，危险**不是**新增放大面，
-  而是**绕过 `:45` 这道已经在挡的闸** —— `reserve` 只需 6 字节头就能触发，放大比会从 1:1
-  直接跳到 6:65536。届时 `decoder.h:44` 的上限校验**必须**排在任何按 `body_len` 定尺寸的
-  动作之前，且预留量不得超过已到达字节数。编码侧 `encoder.h:83`（校验）与 `:95-96`（resize）
+  而是**绕过 `:55` 这道已经在挡的闸** —— `reserve` 只需 6 字节头就能触发，放大比会从 1:1
+  直接跳到 6:65536。届时 `decoder.h:48` 的上限校验**必须**排在任何按 `body_len` 定尺寸的
+  动作之前，且预留量不得超过已到达字节数。编码侧 `encoder.h:83`（校验）与 `:101`（resize）
   的先后顺序就是这条规则的现成范例。
-- **离线消息暂存暂不实现**（`docs/architecture.md:226`）。目标 uid 无在线 fd 时的处理不落地，
+- **离线消息暂存暂不实现**（`docs/architecture.md:230`）。目标 uid 无在线 fd 时的处理不落地，
   仅在协调层预留位置。分层边界不受影响。
 - **性能 / 覆盖率基准推迟**，无触发条件。
 - **`IoStatus::interrupted` 有意永不返回**：EINTR 在读写循环内原地重试
