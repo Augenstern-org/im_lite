@@ -273,6 +273,34 @@ namespace {
     }
 
     // ---------------------------------------------------------------------
+    // E9 —— 超长 content_：encode 的零分配预检（encoder.h:81）必须在任何写入之前拒绝，
+    //        此前该契约零覆盖。70000 > max_message_body_length(65530)，仅凭 content_ 自身
+    //        就超限，无需等 JSON 序列化膨胀。
+    // ---------------------------------------------------------------------
+    void encode_rejects_oversized_content() {
+        Message m = msg_gv1();
+        m.content_ = std::string(70000, 'A');
+        CHECK(m.content_.size() > max_message_body_length);
+
+        FrameHeader              fh(types::Opcode::request, types::Status::ok);
+        MessagePack rmp(fh, m);
+        rmp.fh_.body_len_ = 777;
+
+        std::vector<std::byte> buf = fresh_buf(1024, std::byte{0xAA});
+        std::uint32_t          out_len = 12345;
+
+        const types::IoStatus st = codec::Encoder::encode(rmp, buf, out_len);
+
+        CHECK(st == types::IoStatus::frame_too_long);
+        CHECK(out_len == 0);
+        // 后置条件（encoder.h:67-69）：out_buf 一字节未动（含尾部哨兵区）、body_len_ 不回写。
+        for (std::size_t i = 0; i < buf.size(); ++i) {
+            CHECK(buf[i] == std::byte{0xAA});
+        }
+        CHECK(rmp.fh_.body_len_ == 777);
+    }
+
+    // ---------------------------------------------------------------------
     // E7 —— encode 不做有效性校验：四个字符串全空也照常编码成功
     // ---------------------------------------------------------------------
     void encode_min_frame_empty_strings() {
@@ -312,6 +340,7 @@ int main() {
     encode_sets_body_len_side_effect();
     encode_does_not_write_past_frame();
     encode_rejects_invalid_utf8();
+    encode_rejects_oversized_content();
     encode_min_frame_empty_strings();
     encode_is_noexcept();
 

@@ -75,6 +75,10 @@ namespace codec {
             // TODO：编码器不做有效性校验，由上层机制保证资源有效。
             // if (!rmp.is_valid()) return types::IoStatus::error;
             out_len = 0;
+            // 零分配预检（choke point）：content_ 自身已超限，序列化后必然超限，直接拒绝。
+            // 覆盖所有经 encode() 的调用方（客户端各模式 / 服务端回显路径）；
+            // :83 的 serialized.size() 检查仍是防 JSON 转义膨胀的后置防线，保留不动。
+            if (rmp.msg_.content_.size() > max_message_body_length) return types::IoStatus::frame_too_long;
             try {
                 const std::string serialized = body_serializer(rmp.msg_);
                 // 阈值是「帧体字节数」，与 FrameHeader::body_len_ 同语义（docs/architecture.md §2.4：

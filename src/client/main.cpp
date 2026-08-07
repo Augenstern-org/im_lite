@@ -63,6 +63,14 @@ constexpr std::size_t kSenderContentLen = 64;  // 发送方默认 content_ 字�
 constexpr int         kPollTimeoutMs    = 5000; // 发送侧不可写时单次等待上限
 constexpr std::size_t kProgressEvery    = 16;  // 发送方每若干帧打印一次进度
 
+// 防误输护栏：基准场景单次 1M 条已远超需要，更大的 count 几乎必是手误 —— count 只驱动发送
+// 循环（无 OOM），但会让本次运行时长任意拉长，纯属自伤。
+constexpr std::size_t kMaxSenderCount = 1'000'000;
+// 入站累积缓冲上限：防恶意对端声明超大 body_len 后慢速灌数据（帧体永不凑齐，acc 只进不出、
+// 无界增长）。1MiB 对齐服务端 kWriteHighWater 语义；合法帧最大 6+65530=65536B，此处是其
+// 16 倍，不会误伤正常流量。
+constexpr std::size_t kMaxAccBytes = 1 * 1024 * 1024;
+
 // 构造一条合法消息；content 为空时帧结构完整但 Message::is_valid() 为假（M5）。
 Message make_message(const char* content, const char* msg_id) {
     Message r{};
@@ -215,6 +223,13 @@ int recv_frames(int fd, std::vector<std::byte>& acc, int want) {
         const ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
         if (n > 0) {
             acc.insert(acc.end(), chunk, chunk + n);
+            // 合法流量下 acc 峰值 = 一个未凑齐的帧残余（< 65536B）+ 本次 4096B；超过
+            // kMaxAccBytes 只可能来自恶意对端声明超大 body_len 后慢速灌数据（帧永不凑齐）。
+            if (acc.size() > kMaxAccBytes) {
+                std::cout << "  inbound buffer exceeded " << kMaxAccBytes
+                          << "B (peer declared oversized body_len?) -- treating as connection error\n";
+                return -2;
+            }
             continue;
         }
         if (n == 0) {
@@ -283,7 +298,6 @@ std::string make_padded_content(std::size_t index, std::size_t content_bytes) {
     }
     return s;
 }
-
 // 非阻塞排空自身入站字节并打印已凑齐的帧。
 // 返回 false = 对端已关闭或 recv 出错（此时残留字节先解完再报）；true = 已读到 EAGAIN。
 bool pump_inbound(int fd, std::vector<std::byte>& acc, int& in_count) {
@@ -293,6 +307,12 @@ bool pump_inbound(int fd, std::vector<std::byte>& acc, int& in_count) {
         if (n > 0) {
             acc.insert(acc.end(), chunk, chunk + n);
             drain_frames(acc, in_count, "recv", kBriefBodyBytes); // 每轮就地解帧，acc 不无界增长
+            // 恶意对端声明超大 body_len 后慢速灌数据时帧永不凑齐，解帧后仍有残留 → 无界增长。
+            if (acc.size() > kMaxAccBytes) {
+                std::cout << "  inbound buffer exceeded " << kMaxAccBytes
+                          << "B (peer declared oversized body_len?) -- treating as connection error\n";
+                return false;
+            }
             continue;
         }
         if (n == 0) {
@@ -336,6 +356,12 @@ int run_receiver(int fd, bool keep_reading, int hold_sec) {
         if (n > 0) {
             acc.insert(acc.end(), chunk, chunk + n);
             drain_frames(acc, count, "recv", kBriefBodyBytes);
+            // 与 pump_inbound 同一防护：恶意对端声明超大 body_len 后慢速灌数据，acc 只进不出。
+            if (acc.size() > kMaxAccBytes) {
+                std::cout << "  inbound buffer exceeded " << kMaxAccBytes
+                          << "B (peer declared oversized body_len?) -- treating as connection error\n";
+                return 1;
+            }
             continue;
         }
         if (n == 0) {
@@ -385,7 +411,16 @@ int run_sender(int fd, const std::string& uid, const std::string& peer_uid,
         msg.from_uid_      = uid;
         msg.to_uid_        = peer_uid;
         msg.client_msg_id_ = "s4a-" + std::to_string(i);
-        msg.content_       = make_padded_content(i, content_bytes);
+
+        // 预检：content_bytes 超限时在 make_padded_content 之前拒绝——
+        // 否则先分配 ~9.31GiB 再检查，WSL2 内存上限下先 OOM 杀死进程（无声消失）。
+        if (content_bytes > max_message_body_length) {
+            std::cerr << "[m10] failed to encode frame #" << (i + 1) << ": content_bytes="
+                      << content_bytes << " likely pushes the body past max_message_body_length="
+                      << max_message_body_length << "\n";
+            return 1;
+        }
+        msg.content_ = make_padded_content(i, content_bytes);
 
         std::vector<std::byte> frame;
         if (!encode_frame(msg, types::Opcode::request, types::Status::ok, frame)) {
@@ -585,6 +620,10 @@ int main(int argc, char* argv[]) {
         if (sender_count == 0 || content_bytes == 0) {
             std::cerr << "m10: count and content_bytes must be >= 1\n";
             return 2;
+        }
+        if (sender_count > kMaxSenderCount) {
+            std::cerr << "m10: count too large (max " << kMaxSenderCount << " per run)\n";
+            return 1;
         }
     }
     // 驻留秒数进 std::chrono::seconds(int)，先钉在 int 值域内
