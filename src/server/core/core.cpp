@@ -161,7 +161,7 @@ namespace core {
             //
             // (c) 循环体内针对入站 fd 的 close_client 调用点为 0：所有「杀入站」的决策只写
             //     `fatal = true; break;` ，EPOLLIN 分支收敛成恰好一个 `close_client(fd); return;`
-            //     承重用途是 conn —— :131 绑定的 conns_ 元素引用要一路活到 :267 的 `update_events(fd, conn)`
+            //     承重用途是 conn —— :127 绑定的 conns_ 元素引用要一路活到 :288 的 `update_events(fd, conn)`
             //     入站 fd 只有一个杀点、且那个杀点紧跟 return，引用不可能悬垂。
             //     2026-08-06 有意收窄（D3）：
             //     本不变式从「0 个 close_client」缩到「0 个针对入站 fd 的 close_client」
@@ -172,7 +172,7 @@ namespace core {
             //     因此循环体内杀别的 fd 既不使 conn 失效，也不使 conns_ 的迭代器 / 引用失效。
             //     唯一的例外是自发自收（to_uid_ == from_uid_ ⇒ to_fd == fd，目标就是入站连接）：
             //     该情形不走 close_client(to_fd)，显式回落成 fatal = true; break;
-            //     仍然只经由那个唯一的入站杀点。close_client() 本身另有幂等护栏（:293），两者互不替代。
+            //     仍然只经由那个唯一的入站杀点。close_client() 本身另有幂等护栏（:314），两者互不替代。
             //
             // (d) 不加读缓冲上限，恒界可推导：drain 退出时 in 中只剩一个未完成帧:
             //     < 6 字节或 wire_size + k 且 k < body_len ≤ 65530 => 残留 ≤ 65535;
@@ -244,12 +244,25 @@ namespace core {
                     }
 
                     types::IoStatus wst = to_conn.send(reinterpret_cast<const char*>(encode_buf_.data()), out_len);
-                    // 失败 3：写目标失败。对端已关，或写缓冲越过 kWriteHighWater，connections.cpp:66-67
-                    // 这笔账记在目标头上，杀的必须是目标。
+                    // 背压，不是失败：数据已全部进入目标 write_buf_（send 先 insert 后 flush，
+                    // Connections::send），只是内核发送缓冲满暂时写不出去（flush 遇 EAGAIN）。
+                    // 跨 fd 处置：给目标挂 EPOLLOUT。目标 fd 没有事件在途，永远不会自己走到
+                    // update_events，不武装就静默滞留；排空后 want_write() 为假，掩码重算
+                    // 自动摘除，LT 模式下不会 CPU 空转。
+                    // 自发自收：无需处置，本函数末尾的 update_events(fd, conn) 已按 want_write()
+                    // 给当前 fd 挂上 EPOLLOUT。
+                    if (wst == types::IoStatus::would_block) {
+                        if (to_fd != fd) {
+                            update_events(to_fd, to_conn);
+                        }
+                        continue;
+                    }
+                    // 失败 3：写目标失败。对端已关（closed），或写缓冲越过 kWriteHighWater
+                    // （error，send() 拒绝入队，数据未进缓冲）。这笔账记在目标头上，杀的必须是目标。
                     if (wst == types::IoStatus::closed || wst == types::IoStatus::error) {
                         if (to_fd == fd) {
                             // 自发自收：目标即入站连接，「杀目标」与「杀入站」是同一件事，
-                            // 必须回到 :260 那个唯一的入站杀点，否则 conn 会在 update_events 处悬垂。
+                            // 必须回到 :268 那个唯一的入站杀点，否则 conn 会在 update_events 处悬垂。
                             std::cerr << "[core] send to self fd " << fd << " failed ("
                                     << types::to_string(wst) << ")\n";
                             fatal = true;

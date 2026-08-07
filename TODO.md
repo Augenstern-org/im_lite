@@ -6,29 +6,38 @@
 
 ### 待办
 
-- [ ] **跨 fd 转发 — EPOLLOUT 武装与 fan-out**（**部分消费，整体仍未收敛**）
-  `src/server/core/core.cpp:211`
+- [ ] **跨 fd 转发 — fan-out**（`pending_close_` 排除与 `EPOLLOUT` 武装已消费，剩最后一子项）
+  `src/server/core/core.cpp:219`
   > 基础通路已落地（`controller.cpp:78` 的 `out_queue.emplace_back(rmp, to_fd)`，
-  > `core.cpp:218` 的 `conns_.find(to_fd)` 查目标连接写入）。
-  > **2026-08-06 只消费了下面三个子项中的第二个**（`pending_close_` 排除，连带把失败归因从
-  > 「杀发送方」改成「杀目标」）。标题保持未勾选：`EPOLLOUT` 武装与 fan-out 都还是空的，
-  > **不要把它读成「转发已经做完了」**。
-  - [ ] 目标 fd 的 `EPOLLOUT` 无人武装：`update_events()`（`core.h:45`，私有）在 `core.cpp:267`
-    只对**当前** fd 调用一次。向另一个 fd 部分写入后，没有任何地方会给它挂上 `EPOLLOUT`，
-    该连接的出站数据会**静默无限期滞留**。反方向同样要小心：LT 模式下 `EPOLLOUT` 挂在空闲可写的
-    socket 上会让每次 `epoll_wait` 立刻返回，形成 CPU 空转。规则是「写缓冲非空才武装，排空即撤」。
-  - [x] 目标 fd 可能已在 `pending_close_` 里：`close_client()`（`core.cpp:287-299`）只做
-    `EPOLL_CTL_DEL` + 入队，真正的 `erase` 推迟到 `drain_pending_close()`（`core.cpp:313-321`）。
+  > `core.cpp:226` 的 `conns_.find(to_fd)` 查目标连接写入）。
+  > **2026-08-06** 消费 `pending_close_` 排除（连带把失败归因从「杀发送方」改成「杀目标」）；
+  > **2026-08-07** 消费 `EPOLLOUT` 武装。标题已改：只剩 fan-out，**不要把它读成「转发已经做完了」**。
+  - [x] 目标 fd 的 `EPOLLOUT` 无人武装：`update_events()`（`core.h:45`，私有）只对**当前** fd
+    调用一次。向另一个 fd 部分写入后，没有任何地方会给它挂上 `EPOLLOUT`，该连接的出站数据会
+    **静默无限期滞留**。反方向同样要小心：LT 模式下 `EPOLLOUT` 挂在空闲可写的 socket 上会让
+    每次 `epoll_wait` 立刻返回，形成 CPU 空转。规则是「写缓冲非空才武装，排空即撤」。
+    > 2026-08-07 落地：`send()` 返回 `would_block`（背压，非失败——数据已全部进入目标
+    > `write_buf_`，`Connections::send` 先 insert 后 flush）时，跨 fd 给目标挂
+    > `update_events(to_fd, to_conn)`（`core.cpp:253-258`），排空后掩码重算自动摘除
+    > （`core.cpp:294-305`），LT 空转不成立（`EPOLLOUT` 只在 socket 可写时报告，EAGAIN 即不可写）；
+    > 自发自收无需处置（`handle_client` 末尾的 `update_events(fd, conn)` 已按 `want_write()` 挂上）。
+    > 验证（M8/M9/M10 双进程）：慢消费突发 200×4KB 全送达（改前滞留收不全）；停读 12MB 顶爆
+    > 高水位，归因仍杀目标（`[core] send to fd 5 failed (Error); closing target, sender fd 6
+    > unaffected`），发送方不受牵连。
+  - [x] 目标 fd 可能已在 `pending_close_` 里：`close_client()`（`core.cpp:308-323`）只做
+    `EPOLL_CTL_DEL` + 入队，真正的 `erase` 推迟到 `drain_pending_close()`（`core.cpp:335`）。
     因此 `conns_.find(target_fd)` **仍能命中**一个已被摘出 epoll、即将销毁的连接。
     跨 fd 写入必须同时排除 `pending_close_` 中的 fd。
-    > 2026-08-06 落地：新增 `Core::is_pending_close()`（`core.cpp:303`，`run()` 原地内联的扫描
-    > 也改成调用它）；出队循环 `core.cpp:219` 用它排除已判死的目标。同一轮顺带修掉 D3：三种失败
+    > 2026-08-06 落地：新增 `Core::is_pending_close()`（`core.cpp:325`，`run()` 原地内联的扫描
+    > 也改成调用它）；出队循环 `core.cpp:227` 用它排除已判死的目标。同一轮顺带修掉 D3：三种失败
     > 模式各自归因 —— 目标不可投递 / 编码失败只丢该条并 `continue`（不再 `break`，发送方排在转发
     > 之后的回执不会被吞），写目标失败改为 `close_client(to_fd)` 杀**目标**而非发送方；自发自收
     > （`to_fd == fd`）回落到唯一的入站杀点。`close_client()` 同时改为幂等，避免同一 fd 重复入队
-    > 触发两次 `disconnect_handler_`。不变式 (c) 已按「仅对入站 fd 为 0」重写（`core.cpp:160-172`）。
+    > 触发两次 `disconnect_handler_`。不变式 (c) 已按「仅对入站 fd 为 0」重写（`core.cpp:167`）。
   - [ ] fan-out：`to_uid_` → fd 集合的解析与多 fd 分发（协调层职责，
-    见 `docs/architecture.md` §2.2）。当前 `User` 仅持单 `fd_`，需等向量化落地。
+    见 `docs/architecture.md` §2.2）。前置已满足：`user.h:14` 的 `fds_` 向量 + `vec()`
+    （`user.h:44-50`）已落地（2026-08-06，commit 2e315b2）；`UsersGroup::query` 仍取 `fds_[0]`
+    （`user.h:36-42`），一次请求只投递目标 uid 的第一个在线设备。
 
 - [x] **`UsersGroup` 没有接入点** `src/server/coordination/users_group.h`
   > 2026-08-04 落地：键统一为 `std::string`，新增 `register_user` / `delete_fd` / `query`，双向映射 `uid_to_fd_` + `fd_to_uid_`；
@@ -71,21 +80,22 @@
   范围说明（2026-08-03 改写）：本条现在**只为流式增量解析（性能议题）存在**——不把整帧攒在
   `read_buf_` 里就能推进解析。与错误路径正确性无关：docs/logs/2026-07-31.md §4.1 已推翻
   「必须等分帧状态机给出『本次消耗了多少字节』的出参」的前提——ok 路径消耗量 =
-  `FrameHeader::wire_size + out_rmp.fh_.body_len_` 今天可得，`core.cpp:182` 的 drain 循环已按
+  `FrameHeader::wire_size + out_rmp.fh_.body_len_` 今天可得，`core.cpp:200` 的 drain 循环已按
   精确 erase 推进。字节级切分、「暂时不完整 vs 协议错误」的区分（`incomplete`，decoder.h:32
   帧头未齐 / :55 帧体未齐，保留字节）、超长帧关连接处置（`frame_too_long` → fatal → 关连接，
-  core.cpp:186-189/:260-264）均已随「核心层错误路径三连」落地，不再是本条的待办。
+  core.cpp:188-196/:283）均已随「核心层错误路径三连」落地，不再是本条的待办。
 
 - [ ] **帧完整性校验**：magic + CRC16，尚未设计。
 
-- [ ] **零拷贝编码路径** `src/common/encoder.h:44-48`、`:99`、`src/server/core/core.cpp:238`
+- [ ] **零拷贝编码路径** `src/common/encoder.h:44`、`:105`、`src/server/core/core.cpp:236`
   依赖项（原「编码缓冲按条分配」）已落地：`encode_buf_` 跨消息、跨连接复用并按需增长，
   每条消息 65536 字节的分配与清零已经消失。这条还剩的是**拷贝次数** —— 一条出站帧仍要经过
   三次搬运：`body_serializer()` 先 `dump()` 出一个 `std::string`，`body_writer()` 再 `memcpy`
   进 `out_buf`，`conn.send()` 又把 `[0, out_len)` 拷进 `write_buf_`。
   - [ ] 消除前两次要让序列化直接落进 `out_buf`。难点是顺序：帧体长度必须在写入之前已知，
-    超长帧才拦得住（`encoder.h:83`）；流式写入会让「先算长度再写」的前提失效，
-    `encoder.h:64-69` 那条「出错时 `out_buf` 一字节未动」的后置条件也要重新设计。
+    超长帧才拦得住（`encoder.h:81` 零分配预检 / `:87` 防膨胀后置防线）；流式写入会让
+    「先算长度再写」的前提失效，`encoder.h:67` 那条「出错时 `out_buf` 一字节未动」的
+    后置条件也要重新设计。
   - [ ] 消除第三次要让编码直接写进连接的写缓冲，那会把编码缓冲的生命周期与 `Connections`
     绑死，与「复用缓冲归调用方持有」的现有边界相冲，得连带重新划线。
 
