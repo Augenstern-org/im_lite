@@ -131,7 +131,6 @@ namespace coordination {
             const std::string uid = fd_it->second;
 
             // uid -> User
-            // 查表要在删 fd 表之前做，失败时两张表都保持原样
             const auto it = uid_to_fd_.find(uid);
             if (it == uid_to_fd_.end()) return false;
 
@@ -142,7 +141,7 @@ namespace coordination {
             User& user = it->second;
             user.delete_device(fd);
 
-            // 该用户已无任何 fd，整条记录一并删除。
+            // 该用户已无任何 fd，整条记录一并删除
             // 这必须是 user 与 it 的最后一次使用——erase 之后两者都已失效
             if (user.vec().empty()) uid_to_fd_.erase(it);
 
@@ -155,6 +154,7 @@ namespace coordination {
             // 连接级登录态判定：fd 在双向映射中即已登录（architecture.md §3.4 步 2）。
             return fd_to_uid_.find(fd) != fd_to_uid_.end();
         }
+
         bool query(const std::string& uid, int& fd) const {
             // 无用户
             auto find = uid_to_fd_.find(uid);
@@ -167,6 +167,18 @@ namespace coordination {
 
             // 正常返回
             fd = _fd;
+            return true;
+        }
+
+        // 必须传入指针，成功返回只读向量地址，失败返回空指针
+        bool query_all(const std::string& uid, const std::vector<int>*& fds) const {
+            auto find = uid_to_fd_.find(uid);
+            if (uid_to_fd_.end() == find) {
+                fds = nullptr;
+                return false;
+            }
+
+            fds = &(find->second.vec());
             return true;
         }
     };

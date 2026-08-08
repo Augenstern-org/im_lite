@@ -29,8 +29,7 @@ namespace controller {
         types::IoStatus          st = types::IoStatus::ok;
 
         if (rmp.fh_.opcode_ == types::Opcode::login) {
-            // 登录：校验凭证，成功则把 fd 绑定到 uid（architecture.md §3.4 步 2）。
-            // 绑定发生在登录时，不在 accept 时 —— accept 阶段连接匿名。
+            // 登录：校验凭证，成功则把 fd 绑定到 uid
             const Message& m  = rmp.msg_;
             bool           ok = auth(m.from_uid_, m.content_);
             if (ok) {
@@ -53,20 +52,25 @@ namespace controller {
             }
             st = assembler_.assemble_login_result(rmp, ok ? types::Status::ok : types::Status::fail, assembled);
         } else {
-            // 未登录连接只能发登录帧，其余一律拒绝（协议违规客户端不配得到响应）。
+            // 未登录连接只能发登录帧，其余一律拒绝（协议违规客户端不响应）。
             if (!users_group_.has_fd(fd)) {
                 std::cout << "[controller] reject frame (opcode=" << static_cast<int>(rmp.fh_.opcode_)
                           << ") from unauthenticated fd " << fd << "\n";
                 return;
             }
 
-            // Opcode 判断消息类型：req -> 返回 res（转发待跨 fd 写入落地）；ack -> 应答 ack。
+            // Opcode 判断消息类型：
+            //      req -> 返回 res（转发待跨 fd 写入落地）
+            //      ack -> 应答 ack
             if (rmp.fh_.opcode_ == types::Opcode::ack) {
                 st = assembler_.assemble_ack(rmp, assembled);
             } else if (rmp.fh_.opcode_ == types::Opcode::request) {
-                // 先查路由、再装配响应：响应的 status 取决于目标是否在线，顺序不可颠倒。
-                int        to_fd  = -1;
-                const bool online = query(rmp.msg_.to_uid_, to_fd);
+                // int        to_fd  = -1;
+                // const bool online = query(rmp.msg_.to_uid_, to_fd);
+
+                // 先查路由、再装配响应：响应的 status 取决于目标是否在线，顺序不可颠倒
+                const std::vector<int>* fds = nullptr;
+                const bool online = query_all(rmp.msg_.to_uid_, fds);
 
                 // 目标在线 = ok（已入转发队列）；不在线 = fail（无处投递，发送方必须知情）。
                 // 注意这里只表达「路由结果」，不表达「投递保证」：目标 fd 写失败 / 积压超高水位
@@ -75,7 +79,9 @@ namespace controller {
 
                 // 转发。必须先于尾部 assembled 回显入队，out_queue 的这一顺序是被测试约束的。
                 if (online) {
-                    out_queue.emplace_back(rmp, to_fd);
+                    for (auto to_fd : *fds) {
+                        out_queue.emplace_back(rmp, to_fd);
+                    }
                 } else {
                     std::cout << "[controller] drop request from \"" << rmp.msg_.from_uid_ << "\" (fd " << fd
                               << ") to \"" << rmp.msg_.to_uid_ << "\": peer not online\n";
@@ -99,6 +105,11 @@ namespace controller {
 
     bool Controller::query(const std::string& uid, int& fd) const {
         return users_group_.query(uid, fd);
+    }
+
+    // 必须传入指针，成功返回只读向量地址，失败返回空指针
+    bool Controller::query_all(const std::string& uid, const std::vector<int>*& fds) const {
+        return users_group_.query_all(uid, fds);
     }
 
     bool Controller::auth(const std::string& uid, const std::string& credential) const {

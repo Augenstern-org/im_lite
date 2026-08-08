@@ -40,6 +40,7 @@ namespace controller {
 
         void process(int fd, const MessagePack& rmp, std::vector<std::pair<MessagePack, int>>& out_queue);
         bool query(const std::string& uid, int& fd) const;
+        bool query_all(const std::string& uid, const std::vector<int>*& fds) const;
 
     private:
         coordination::Assembler&  assembler_;

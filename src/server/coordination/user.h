@@ -49,7 +49,7 @@ namespace coordination {
         }
 
         // 只读重载：供 UsersGroup 的不变式校验等 const 场景使用
-        const std::vector<int>& vec() const {
+        [[nodiscard]] const std::vector<int>& vec() const {
             return fds_;
         }
 
